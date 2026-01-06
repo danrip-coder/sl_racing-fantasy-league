@@ -346,3 +346,169 @@ def admin(round_num):
     <h2>Manual Results Entry - Round {{ round_num }}</h2>
     <form method="post">
         {% for cls, riders in [('450', RIDERS_450), ('250', RIDERS_250)] %}
+        <h3>{{ cls }} Class</h3>
+        {% for r in riders %}
+        {{ r }}: <input name="{{ cls }}_{{ r.replace(' ', '_') }}" type="number" min="1" style="width:60px;"><br>
+        {% endfor %}<br>
+        {% endfor %}
+        <input type="submit" value="Save Results">
+    </form>
+    <br><a href="/dashboard">← Back</a>
+    ''', round_num=round_num, RIDERS_450=RIDERS_450, RIDERS_250=RIDERS_250)
+
+@app.route('/admin/users', methods=['GET', 'POST'])
+def admin_users():
+    if session.get('username') != 'admin':
+        return redirect(url_for('login'))
+    conn = sqlite3.connect('fantasy.db')
+    c = conn.cursor()
+    if request.method == 'POST':
+        user_id = request.form['user_id']
+        new_pass = generate_password_hash(request.form['new_password'])
+        c.execute('UPDATE users SET password = ? WHERE id = ?', (new_pass, user_id))
+        conn.commit()
+        flash('Password reset successfully!')
+    c.execute('SELECT id, username, email FROM users ORDER BY username')
+    users = c.fetchall()
+    conn.close()
+    return render_template_string('''
+    <h2>Manage Users (Admin Only)</h2>
+    <table border="1" style="border-collapse:collapse; width:90%; text-align:left;">
+        <tr style="background:#f0f0f0;"><th>ID</th><th>Username</th><th>Email</th><th>Reset</th></tr>
+        {% for uid, uname, email in users %}
+        <tr>
+            <td>{{ uid }}</td><td>{{ uname }}</td><td>{{ email or 'No email' }}</td>
+            <td>
+                <form method="post" style="display:inline;">
+                    <input type="hidden" name="user_id" value="{{ uid }}">
+                    <input type="password" name="new_password" placeholder="New password" required style="width:150px;">
+                    <input type="submit" value="Reset">
+                </form>
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+    <br><a href="/dashboard">← Back</a>
+    ''', users=users)
+
+@app.route('/rules')
+def rules():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    return render_template_string('''
+    <h1>Fantasy League Rules</h1>
+    <h2>How to Play</h2>
+    <ul>
+        <li>Pick <strong>ONE rider from 450</strong> and <strong>ONE from 250</strong> each round.</li>
+        <li>Must pick both classes.</li>
+        <li>Picks lock at midnight the night before the race.</li>
+    </ul>
+    <h2>Missed Picks?</h2>
+    <ul>
+        <li>If you forget, <strong>random riders will be auto-assigned</strong> (shown in <span style="color:red;">red</span> on leaderboard).</li>
+    </ul>
+    <h2>Repeat Rule</h2>
+    <ul>
+        <li>Cannot pick the same rider (same class) within any 3-round window.</li>
+    </ul>
+    <h2>Scoring</h2>
+    <ul>
+        <li>1st: 25 | 2nd: 22 | 3rd: 20 | 4th: 18 | 5th: 16 | 6th–22nd: 15 down to 1 | 23+: 0</li>
+        <li>Round score = 450 pick points + 250 pick points</li>
+        <li>Season winner = highest total points</li>
+    </ul>
+    <br><a href="/dashboard">← Back</a>
+    ''')
+
+@app.route('/leaderboard')
+def leaderboard():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    
+    conn = sqlite3.connect('fantasy.db')
+    c = conn.cursor()
+    c.execute('SELECT id, username FROM users ORDER BY username')
+    users = c.fetchall()
+    
+    # Get all completed rounds (those with results)
+    completed_rounds = []
+    for r in range(1, len(SCHEDULE)+1):
+        c.execute('SELECT COUNT(*) FROM results WHERE round_num = ?', (r,))
+        if c.fetchone()[0] > 0:
+            completed_rounds.append(r)
+    
+    # Build data structure
+    player_data = []
+    for user_id, username in users:
+        total = 0
+        round_picks = {}
+        
+        for rnd in completed_rounds:
+            picks = {'450': ('—', False), '250': ('—', False)}  # (initials, is_random)
+            for cls in ['450', '250']:
+                c.execute('SELECT rider, auto_random FROM picks WHERE user_id = ? AND round_num = ? AND class = ?',
+                          (user_id, rnd, cls))
+                row = c.fetchone()
+                if row:
+                    initials = get_initials(row[0])
+                    picks[cls] = (initials, bool(row[1]))
+                    # Add points
+                    c.execute('SELECT position FROM results WHERE round_num = ? AND class = ? AND rider = ?', 
+                              (rnd, cls, row[0]))
+                    pos = c.fetchone()
+                    if pos:
+                        total += get_points(pos[0])
+            round_picks[rnd] = picks
+        
+        player_data.append({
+            'username': username,
+            'total': total,
+            'round_picks': round_picks
+        })
+    
+    # Sort by total descending
+    player_data.sort(key=lambda x: x['total'], reverse=True)
+    
+    conn.close()
+    
+    return render_template_string('''
+    <h2>Season Leaderboard</h2>
+    <table style="width:100%; border-collapse:collapse; font-size:14px;">
+        <thead>
+            <tr style="background:#333; color:white;">
+                <th>Rank</th>
+                <th>Player</th>
+                <th>Total</th>
+                {% for rnd in completed_rounds %}
+                <th>R{{ rnd }}<br>450 | 250</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for i, player in enumerate(player_data) %}
+            <tr style="background:{% if i % 2 == 0 %}#f8f8f8{% else %}#ffffff{% endif %};">
+                <td style="text-align:center; font-weight:bold;">{{ i+1 }}</td>
+                <td style="font-weight:bold;">{{ player.username }}</td>
+                <td style="text-align:center; font-weight:bold; font-size:18px;">{{ player.total }}</td>
+                {% for rnd in completed_rounds %}
+                <td style="text-align:center;">
+                    {% set rnd_picks = player.round_picks[rnd] %}
+                    <span {% if rnd_picks['450'][1] %}style="color:red;"{% endif %}>{{ rnd_picks['450'][0] }}</span> |
+                    <span {% if rnd_picks['250'][1] %}style="color:red;"{% endif %}>{{ rnd_picks['250'][0] }}</span>
+                </td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+    <br><small>Red initials = random auto-pick (missed deadline)</small>
+    <br><br><a href="/dashboard">← Back to Dashboard</a>
+    ''', player_data=player_data, completed_rounds=completed_rounds)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+if __name__ == '__main__':
+    app.run(debug=True)
