@@ -34,13 +34,15 @@ SCHEDULE = [
 RIDERS_450 = [
     'Chase Sexton', 'Cooper Webb', 'Eli Tomac', 'Hunter Lawrence', 'Jett Lawrence',
     'Ken Roczen', 'Jason Anderson', 'Aaron Plessinger', 'Malcolm Stewart', 'Dylan Ferrandis',
-    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig'
+    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig', 'Joey Savatgy',
+    'Christian Craig', 'Justin Cooper', 'Austin Forkner'  
 ]
 
 RIDERS_250 = [
     'Haiden Deegan', 'Levi Kitchen', 'Chance Hymas', 'Ryder DiFrancesco', 'Max Anstie',
     'Cameron McAdoo', 'Nate Thrasher', 'Jalek Swoll', 'Casey Cochran', 'Daxton Bennick',
-    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle'
+    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle', 'Max Vohland', 'Michael Mosiman', 
+    'Parker Ross', 'Carson Mumford' 
 ]
 
 def get_db_connection():
