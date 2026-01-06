@@ -145,6 +145,154 @@ def parse_results(url, cls):
         except: pass
     return results
 
+def get_base_style():
+    return '''
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 15px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+        }
+        h1, h2, h3 {
+            color: #2d3748;
+            margin-bottom: 20px;
+        }
+        h1 { font-size: 2.5em; border-bottom: 4px solid #667eea; padding-bottom: 15px; }
+        h2 { font-size: 2em; color: #667eea; }
+        h3 { font-size: 1.5em; color: #764ba2; margin-top: 30px; }
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 12px 30px;
+            border: none;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+            transition: transform 0.2s, box-shadow 0.2s;
+            margin: 5px;
+        }
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+        }
+        .btn-danger {
+            background: linear-gradient(135deg, #f56565 0%, #c53030 100%);
+        }
+        .btn-small {
+            padding: 8px 16px;
+            font-size: 14px;
+        }
+        input[type="text"], input[type="password"], input[type="email"], input[type="number"], select {
+            width: 100%;
+            padding: 12px;
+            border: 2px solid #e2e8f0;
+            border-radius: 8px;
+            font-size: 16px;
+            margin: 8px 0;
+            transition: border-color 0.3s;
+        }
+        input:focus, select:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
+            border-radius: 10px;
+            overflow: hidden;
+        }
+        th {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 15px;
+            text-align: left;
+            font-weight: 600;
+        }
+        td {
+            padding: 12px 15px;
+            border-bottom: 1px solid #e2e8f0;
+        }
+        tr:hover {
+            background-color: #f7fafc;
+        }
+        tr:nth-child(even) {
+            background-color: #f8f9fa;
+        }
+        .flash {
+            padding: 15px 20px;
+            margin: 20px 0;
+            border-radius: 8px;
+            background: #48bb78;
+            color: white;
+            font-weight: 500;
+        }
+        .link {
+            color: #667eea;
+            text-decoration: none;
+            font-weight: 600;
+            transition: color 0.3s;
+        }
+        .link:hover {
+            color: #764ba2;
+            text-decoration: underline;
+        }
+        .card {
+            background: #f7fafc;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 15px 0;
+            border-left: 5px solid #667eea;
+        }
+        .random-pick {
+            color: #e53e3e;
+            font-weight: 600;
+        }
+        .dashboard-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 20px;
+            margin: 30px 0;
+        }
+        .dashboard-card {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 15px;
+            text-align: center;
+            transition: transform 0.3s, box-shadow 0.3s;
+            cursor: pointer;
+        }
+        .dashboard-card:hover {
+            transform: translateY(-5px);
+            box-shadow: 0 15px 30px rgba(0,0,0,0.3);
+        }
+        .dashboard-card h3 {
+            color: white;
+            margin: 0;
+        }
+        hr {
+            border: none;
+            border-top: 2px solid #e2e8f0;
+            margin: 30px 0;
+        }
+    </style>
+    '''
+
 @app.route('/', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -160,15 +308,32 @@ def login():
             session['username'] = username
             return redirect(url_for('dashboard'))
         flash('Invalid credentials')
-    return render_template_string('''
-    <h2>SuperMotocross Fantasy League</h2>
-    <h3>Login</h3>
-    <form method="post">
-        Username: <input name="username" required><br><br>
-        Password: <input type="password" name="password" required><br><br>
-        <input type="submit" value="Login">
-    </form>
-    <br><a href="/register">New? Register here</a>
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🏍️ SuperMotocross Fantasy League</h1>
+        <div class="card">
+            <h2>Login</h2>
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    {% for message in messages %}
+                        <div class="flash">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <form method="post">
+                <label><strong>Username</strong></label>
+                <input type="text" name="username" required>
+                
+                <label><strong>Password</strong></label>
+                <input type="password" name="password" required>
+                
+                <button type="submit" class="btn">Login</button>
+            </form>
+            <p style="margin-top: 20px;">
+                <a href="/register" class="link">New here? Register now!</a>
+            </p>
+        </div>
+    </div>
     ''')
 
 @app.route('/register', methods=['GET', 'POST'])
@@ -188,15 +353,34 @@ def register():
         except psycopg2.IntegrityError:
             flash('Username or email already taken')
             conn.close()
-    return render_template_string('''
-    <h2>Register</h2>
-    <form method="post">
-        Username: <input name="username" required><br><br>
-        Email: <input type="email" name="email" required><br><br>
-        Password: <input type="password" name="password" required><br><br>
-        <input type="submit" value="Register">
-    </form>
-    <br><a href="/">Back to Login</a>
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🏍️ Register for Fantasy League</h1>
+        <div class="card">
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    {% for message in messages %}
+                        <div class="flash">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <form method="post">
+                <label><strong>Username</strong></label>
+                <input type="text" name="username" required>
+                
+                <label><strong>Email</strong></label>
+                <input type="email" name="email" required>
+                
+                <label><strong>Password</strong></label>
+                <input type="password" name="password" required>
+                
+                <button type="submit" class="btn">Register</button>
+            </form>
+            <p style="margin-top: 20px;">
+                <a href="/" class="link">← Back to Login</a>
+            </p>
+        </div>
+    </div>
     ''')
 
 @app.route('/dashboard')
@@ -204,22 +388,54 @@ def dashboard():
     if 'user_id' not in session:
         return redirect(url_for('login'))
     current_round = get_current_round()
-    return render_template_string('''
-    <h1>Welcome, {{ username }}!</h1>
-    <p><strong>Current Round:</strong> {{ current_round }}</p>
-    <p><a href="/pick/{{ current_round }}"><button style="font-size:18px;padding:10px 20px;">Make/Edit Picks for Round {{ current_round }}</button></a></p>
-    <p><a href="/leaderboard"><button style="font-size:18px;padding:10px 20px;">View Leaderboard</button></a></p>
-    <p><a href="/rules"><button style="font-size:18px;padding:10px 20px;">View Rules</button></a></p>
-    {% if username == 'admin' %}
-    <hr>
-    <h3>Admin Tools</h3>
-    <p><a href="/fetch_results/{{ current_round }}">Auto-Fetch Results for Round {{ current_round }}</a></p>
-    <p><a href="/admin/{{ current_round }}">Manual Results Entry</a></p>
-    <p><a href="/admin/users">Manage Users / Reset Passwords</a></p>
-    <p><a href="/admin/export">Export DB to CSV</a></p>
-    {% endif %}
-    <br><br>
-    <a href="/logout">Logout</a>
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>Welcome, {{ username }}! 🏁</h1>
+        <p style="font-size: 1.2em; color: #718096; margin-bottom: 30px;">
+            <strong>Current Round:</strong> {{ current_round }}
+        </p>
+        
+        <div class="dashboard-grid">
+            <a href="/pick/{{ current_round }}" style="text-decoration: none;">
+                <div class="dashboard-card">
+                    <h3>🏍️</h3>
+                    <h3>Make Picks</h3>
+                    <p>Round {{ current_round }}</p>
+                </div>
+            </a>
+            
+            <a href="/leaderboard" style="text-decoration: none;">
+                <div class="dashboard-card">
+                    <h3>🏆</h3>
+                    <h3>Leaderboard</h3>
+                    <p>View Standings</p>
+                </div>
+            </a>
+            
+            <a href="/rules" style="text-decoration: none;">
+                <div class="dashboard-card">
+                    <h3>📋</h3>
+                    <h3>Rules</h3>
+                    <p>How to Play</p>
+                </div>
+            </a>
+        </div>
+        
+        {% if username == 'admin' %}
+        <hr>
+        <h3>🔧 Admin Tools</h3>
+        <div style="margin: 20px 0;">
+            <a href="/fetch_results/{{ current_round }}" class="btn btn-small">Auto-Fetch Results (R{{ current_round }})</a>
+            <a href="/admin/{{ current_round }}" class="btn btn-small">Manual Results Entry</a>
+            <a href="/admin/users" class="btn btn-small">Manage Users</a>
+            <a href="/admin/export" class="btn btn-small">Export Database</a>
+        </div>
+        {% endif %}
+        
+        <div style="margin-top: 40px;">
+            <a href="/logout" class="link">Logout</a>
+        </div>
+    </div>
     ''', username=session['username'], current_round=current_round)
 
 @app.route('/pick/<int:round_num>', methods=['GET', 'POST'])
@@ -312,75 +528,107 @@ def pick(round_num):
         if any(existing_picks.get(cls, (None, 0))[1] for cls in ['450', '250']):
             message += " <strong style='color:red;'>Random picks applied.</strong>"
     
-    return render_template_string('''
-    <h2>Picks - Round {{ round_num }}</h2>
-    {% if message %}<p style="font-weight:bold;">{{ message | safe }}</p>{% endif %}
-    
-    {% if deadline_passed %}
-        <p><strong>Your picks:</strong></p>
-        <ul>
-            <li><strong>450:</strong> {{ existing_picks['450'][0] if '450' in existing_picks else 'None' }}
-                {% if '450' in existing_picks and existing_picks['450'][1] %} <span style="color:red;">(Random)</span>{% endif %}</li>
-            <li><strong>250:</strong> {{ existing_picks['250'][0] if '250' in existing_picks else 'None' }}
-                {% if '250' in existing_picks and existing_picks['250'][1] %} <span style="color:red;">(Random)</span>{% endif %}</li>
-        </ul>
-    {% else %}
-        <form method="post">
-            <strong>450 Class:</strong><br>
-            <select name="rider_450" style="width:300px;font-size:18px;">
-                {% for r in riders_450 %}
-                <option {% if '450' in existing_picks and existing_picks['450'][0]==r %}selected{% endif %}>{{ r }}</option>
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h2>🏍️ Round {{ round_num }} Picks</h2>
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="flash">{{ message }}</div>
                 {% endfor %}
-            </select><br><br>
-            
-            <strong>250 Class:</strong><br>
-            <select name="rider_250" style="width:300px;font-size:18px;">
-                {% for r in riders_250 %}
-                <option {% if '250' in existing_picks and existing_picks['250'][0]==r %}selected{% endif %}>{{ r }}</option>
+            {% endif %}
+        {% endwith %}
+        
+        {% if message %}
+            <div class="card">
+                <p style="font-weight:bold;">{{ message | safe }}</p>
+            </div>
+        {% endif %}
+        
+        {% if deadline_passed %}
+            <div class="card">
+                <h3 style="margin-top: 0;">Your Picks</h3>
+                <p><strong>450 Class:</strong> {{ existing_picks['450'][0] if '450' in existing_picks else 'None' }}
+                    {% if '450' in existing_picks and existing_picks['450'][1] %} 
+                        <span class="random-pick">(Random)</span>
+                    {% endif %}
+                </p>
+                <p><strong>250 Class:</strong> {{ existing_picks['250'][0] if '250' in existing_picks else 'None' }}
+                    {% if '250' in existing_picks and existing_picks['250'][1] %} 
+                        <span class="random-pick">(Random)</span>
+                    {% endif %}
+                </p>
+            </div>
+        {% else %}
+            <form method="post">
+                <div class="card">
+                    <label><strong>450 Class Rider</strong></label>
+                    <select name="rider_450">
+                        {% for r in riders_450 %}
+                        <option {% if '450' in existing_picks and existing_picks['450'][0]==r %}selected{% endif %}>{{ r }}</option>
+                        {% endfor %}
+                    </select>
+                    
+                    <label><strong>250 Class Rider</strong></label>
+                    <select name="rider_250">
+                        {% for r in riders_250 %}
+                        <option {% if '250' in existing_picks and existing_picks['250'][0]==r %}selected{% endif %}>{{ r }}</option>
+                        {% endfor %}
+                    </select>
+                    
+                    <button type="submit" class="btn">Save Picks</button>
+                </div>
+            </form>
+        {% endif %}
+        
+        {% if other_players_picks %}
+        <hr>
+        <h3>Other Players' Picks</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Player</th>
+                    <th>450 Class</th>
+                    <th>250 Class</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for player, picks in other_players_picks.items() %}
+                <tr>
+                    <td style="font-weight: 600;">{{ player }}</td>
+                    <td>
+                        {% if picks['450'] %}
+                            {{ picks['450']['rider'] }}
+                            {% if picks['450']['auto_random'] %}
+                                <span class="random-pick">(Random)</span>
+                            {% endif %}
+                        {% else %}
+                            <span style="color:#999;">Not picked yet</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if picks['250'] %}
+                            {{ picks['250']['rider'] }}
+                            {% if picks['250']['auto_random'] %}
+                                <span class="random-pick">(Random)</span>
+                            {% endif %}
+                        {% else %}
+                            <span style="color:#999;">Not picked yet</span>
+                        {% endif %}
+                    </td>
+                </tr>
                 {% endfor %}
-            </select><br><br>
-            
-            <input type="submit" value="Save Picks" style="font-size:18px;padding:10px;">
-        </form>
-    {% endif %}
-    
-    {% if other_players_picks %}
-    <hr style="margin-top:30px;">
-    <h3>Other Players' Picks for Round {{ round_num }}</h3>
-    <table border="1" style="border-collapse:collapse; width:90%; text-align:left; margin-top:15px;">
-        <tr style="background:#f0f0f0;">
-            <th style="padding:8px;">Player</th>
-            <th style="padding:8px;">450 Class</th>
-            <th style="padding:8px;">250 Class</th>
-        </tr>
-        {% for player, picks in other_players_picks.items() %}
-        <tr>
-            <td style="padding:8px; font-weight:bold;">{{ player }}</td>
-            <td style="padding:8px;">
-                {% if picks['450'] %}
-                    {{ picks['450']['rider'] }}
-                    {% if picks['450']['auto_random'] %}<span style="color:red; font-size:12px;"> (Random)</span>{% endif %}
-                {% else %}
-                    <span style="color:#999;">Not picked yet</span>
-                {% endif %}
-            </td>
-            <td style="padding:8px;">
-                {% if picks['250'] %}
-                    {{ picks['250']['rider'] }}
-                    {% if picks['250']['auto_random'] %}<span style="color:red; font-size:12px;"> (Random)</span>{% endif %}
-                {% else %}
-                    <span style="color:#999;">Not picked yet</span>
-                {% endif %}
-            </td>
-        </tr>
-        {% endfor %}
-    </table>
-    {% else %}
-    <hr style="margin-top:30px;">
-    <p><em>No other players have made picks for this round yet.</em></p>
-    {% endif %}
-    
-    <br><a href="/dashboard">← Back to Dashboard</a>
+            </tbody>
+        </table>
+        {% else %}
+        <hr>
+        <p style="color: #718096; font-style: italic;">No other players have made picks for this round yet.</p>
+        {% endif %}
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
     ''', round_num=round_num, riders_450=RIDERS_450, riders_250=RIDERS_250,
          existing_picks=existing_picks, message=message, deadline_passed=deadline_passed,
          other_players_picks=other_players_picks)
@@ -423,18 +671,40 @@ def admin(round_num):
         conn.commit()
         conn.close()
         flash('Manual results saved')
-    return render_template_string('''
-    <h2>Manual Results Entry - Round {{ round_num }}</h2>
-    <form method="post">
-        {% for cls, riders in [('450', RIDERS_450), ('250', RIDERS_250)] %}
-        <h3>{{ cls }} Class</h3>
-        {% for r in riders %}
-        {{ r }}: <input name="{{ cls }}_{{ r.replace(' ', '_') }}" type="number" min="1" style="width:60px;"><br>
-        {% endfor %}<br>
-        {% endfor %}
-        <input type="submit" value="Save Results">
-    </form>
-    <br><a href="/dashboard">← Back</a>
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🔧 Manual Results Entry - Round {{ round_num }}</h1>
+        
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="flash">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <form method="post">
+            {% for cls, riders in [('450', RIDERS_450), ('250', RIDERS_250)] %}
+            <div class="card">
+                <h3 style="margin-top: 0;">{{ cls }} Class Results</h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px;">
+                    {% for r in riders %}
+                    <div>
+                        <label style="font-weight: 600;">{{ r }}</label>
+                        <input name="{{ cls }}_{{ r.replace(' ', '_') }}" type="number" min="1" placeholder="Position">
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+            
+            <button type="submit" class="btn">Save Results</button>
+        </form>
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
     ''', round_num=round_num, RIDERS_450=RIDERS_450, RIDERS_250=RIDERS_250)
 
 @app.route('/admin/users', methods=['GET', 'POST'])
@@ -444,32 +714,83 @@ def admin_users():
     conn = get_db_connection()
     c = conn.cursor()
     if request.method == 'POST':
+        action = request.form.get('action')
         user_id = request.form['user_id']
-        new_pass = generate_password_hash(request.form['new_password'])
-        c.execute('UPDATE users SET password = %s WHERE id = %s', (new_pass, user_id))
-        conn.commit()
-        flash('Password reset successfully!')
+        
+        if action == 'reset_password':
+            new_pass = generate_password_hash(request.form['new_password'])
+            c.execute('UPDATE users SET password = %s WHERE id = %s', (new_pass, user_id))
+            conn.commit()
+            flash('Password reset successfully!')
+        elif action == 'delete_user':
+            # Prevent admin from deleting themselves
+            if int(user_id) == session.get('user_id'):
+                flash('Cannot delete your own admin account!')
+            else:
+                # Delete user's picks first (foreign key constraint)
+                c.execute('DELETE FROM picks WHERE user_id = %s', (user_id,))
+                # Delete the user
+                c.execute('DELETE FROM users WHERE id = %s', (user_id,))
+                conn.commit()
+                flash('User deleted successfully!')
+    
     c.execute('SELECT id, username, email FROM users ORDER BY username')
     users = c.fetchall()
     conn.close()
-    return render_template_string('''
-    <h2>Manage Users (Admin Only)</h2>
-    <table border="1" style="border-collapse:collapse; width:90%; text-align:left;">
-        <tr style="background:#f0f0f0;"><th>ID</th><th>Username</th><th>Email</th><th>Reset</th></tr>
-        {% for user in users %}
-        <tr>
-            <td>{{ user['id'] }}</td><td>{{ user['username'] }}</td><td>{{ user['email'] or 'No email' }}</td>
-            <td>
-                <form method="post" style="display:inline;">
-                    <input type="hidden" name="user_id" value="{{ user['id'] }}">
-                    <input type="password" name="new_password" placeholder="New password" required style="width:150px;">
-                    <input type="submit" value="Reset">
-                </form>
-            </td>
-        </tr>
-        {% endfor %}
-    </table>
-    <br><a href="/dashboard">← Back</a>
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🔧 Manage Users</h1>
+        
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="flash">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Username</th>
+                    <th>Email</th>
+                    <th>Reset Password</th>
+                    <th>Delete</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td>{{ user['id'] }}</td>
+                    <td style="font-weight: 600;">{{ user['username'] }}</td>
+                    <td>{{ user['email'] or 'No email' }}</td>
+                    <td>
+                        <form method="post" style="display: flex; gap: 10px; align-items: center;">
+                            <input type="hidden" name="action" value="reset_password">
+                            <input type="hidden" name="user_id" value="{{ user['id'] }}">
+                            <input type="password" name="new_password" placeholder="New password" required 
+                                   style="width: 150px; margin: 0;">
+                            <button type="submit" class="btn btn-small">Reset</button>
+                        </form>
+                    </td>
+                    <td>
+                        <form method="post" style="display:inline;" 
+                              onsubmit="return confirm('Are you sure you want to delete {{ user['username'] }}? This will also delete all their picks.');">
+                            <input type="hidden" name="action" value="delete_user">
+                            <input type="hidden" name="user_id" value="{{ user['id'] }}">
+                            <button type="submit" class="btn btn-small btn-danger">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
     ''', users=users)
 
 @app.route('/admin/export')
@@ -507,29 +828,54 @@ def admin_export():
 def rules():
     if 'user_id' not in session:
         return redirect(url_for('login'))
-    return render_template_string('''
-    <h1>Fantasy League Rules</h1>
-    <h2>How to Play</h2>
-    <ul>
-        <li>Pick <strong>ONE rider from 450</strong> and <strong>ONE from 250</strong> each round.</li>
-        <li>Must pick both classes.</li>
-        <li>Picks lock at <strong>midnight the night before each race</strong>.</li>
-    </ul>
-    <h2>Missed Picks?</h2>
-    <ul>
-        <li>If you forget, <strong>random riders will be auto-assigned</strong> (shown in <span style="color:red;">red</span> on leaderboard).</li>
-    </ul>
-    <h2>Repeat Rule</h2>
-    <ul>
-        <li>Cannot pick the same rider (same class) within any 3-round window.</li>
-    </ul>
-    <h2>Scoring</h2>
-    <ul>
-        <li>1st: 25 | 2nd: 22 | 3rd: 20 | 4th: 18 | 5th: 16 | 6th–22nd: 15 down to 1 | 23+: 0</li>
-        <li>Round score = 450 pick points + 250 pick points</li>
-        <li>Season winner = highest total points</li>
-    </ul>
-    <br><a href="/dashboard">← Back</a>
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>📋 Fantasy League Rules</h1>
+        
+        <div class="card">
+            <h3 style="margin-top: 0;">🏍️ How to Play</h3>
+            <ul style="line-height: 1.8; margin-left: 20px;">
+                <li>Pick <strong>ONE rider from 450</strong> and <strong>ONE from 250</strong> each round</li>
+                <li>You must pick riders from both classes</li>
+                <li>Picks lock at <strong>midnight the night before each race</strong></li>
+            </ul>
+        </div>
+        
+        <div class="card">
+            <h3 style="margin-top: 0;">⏰ Missed Picks?</h3>
+            <ul style="line-height: 1.8; margin-left: 20px;">
+                <li>If you forget to pick, <strong>random riders will be auto-assigned</strong></li>
+                <li>Random picks are shown in <span class="random-pick">red</span> on the leaderboard</li>
+            </ul>
+        </div>
+        
+        <div class="card">
+            <h3 style="margin-top: 0;">🔄 Repeat Rule</h3>
+            <ul style="line-height: 1.8; margin-left: 20px;">
+                <li>You cannot pick the same rider (in the same class) within any 3-round window</li>
+                <li>This keeps strategy interesting throughout the season!</li>
+            </ul>
+        </div>
+        
+        <div class="card">
+            <h3 style="margin-top: 0;">🏆 Scoring</h3>
+            <table style="margin: 15px 0; box-shadow: none;">
+                <tr><td><strong>1st Place:</strong></td><td>25 points</td></tr>
+                <tr><td><strong>2nd Place:</strong></td><td>22 points</td></tr>
+                <tr><td><strong>3rd Place:</strong></td><td>20 points</td></tr>
+                <tr><td><strong>4th Place:</strong></td><td>18 points</td></tr>
+                <tr><td><strong>5th Place:</strong></td><td>16 points</td></tr>
+                <tr><td><strong>6th-22nd:</strong></td><td>15 down to 1 point</td></tr>
+                <tr><td><strong>23rd+:</strong></td><td>0 points</td></tr>
+            </table>
+            <p style="margin-top: 15px;"><strong>Round Score</strong> = 450 pick points + 250 pick points</p>
+            <p><strong>Season Winner</strong> = Player with highest total points!</p>
+        </div>
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
     ''')
 
 @app.route('/leaderboard')
@@ -581,38 +927,63 @@ def leaderboard():
     
     conn.close()
     
-    return render_template_string('''
-    <h2>Season Leaderboard</h2>
-    <table style="width:100%; border-collapse:collapse; font-size:14px;">
-        <thead>
-            <tr style="background:#333; color:white;">
-                <th>Rank</th>
-                <th>Player</th>
-                <th>Total</th>
-                {% for rnd in completed_rounds %}
-                <th>R{{ rnd }}<br>450 | 250</th>
-                {% endfor %}
-            </tr>
-        </thead>
-        <tbody>
-            {% for i, player in enumerate(player_data) %}
-            <tr style="background:{% if i % 2 == 0 %}#f8f8f8{% else %}#ffffff{% endif %};">
-                <td style="text-align:center; font-weight:bold;">{{ i+1 }}</td>
-                <td style="font-weight:bold;">{{ player.username }}</td>
-                <td style="text-align:center; font-weight:bold; font-size:18px;">{{ player.total }}</td>
-                {% for rnd in completed_rounds %}
-                <td style="text-align:center;">
-                    <span {% if player.round_picks[rnd]['450'][1] %}style="color:red;"{% endif %}>{{ player.round_picks[rnd]['450'][0] }}</span> |
-                    <span {% if player.round_picks[rnd]['250'][1] %}style="color:red;"{% endif %}>{{ player.round_picks[rnd]['250'][0] }}</span>
-                </td>
-                {% endfor %}
-            </tr>
-            {% endfor %}
-        </tbody>
-    </table>
-    <br><small>Red initials = random auto-pick (missed deadline)</small>
-    <br><br><a href="/dashboard">← Back to Dashboard</a>
-    ''', player_data=player_data, completed_rounds=completed_rounds, enumerate=enumerate)
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🏆 Season Leaderboard</h1>
+        
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="text-align: center;">Rank</th>
+                        <th>Player</th>
+                        <th style="text-align: center;">Total Points</th>
+                        {% for rnd in completed_rounds %}
+                        <th style="text-align: center;">R{{ rnd }}<br><small>450 | 250</small></th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for i in range(player_data|length) %}
+                    {% set player = player_data[i] %}
+                    <tr {% if player.username == session.username %}style="background: #e6f7ff; font-weight: 600;"{% endif %}>
+                        <td style="text-align: center; font-size: 1.3em; font-weight: bold;">
+                            {% if i == 0 %}🥇
+                            {% elif i == 1 %}🥈
+                            {% elif i == 2 %}🥉
+                            {% else %}{{ i+1 }}
+                            {% endif %}
+                        </td>
+                        <td style="font-weight: 600;">{{ player.username }}</td>
+                        <td style="text-align: center; font-size: 1.4em; font-weight: bold; color: #667eea;">
+                            {{ player.total }}
+                        </td>
+                        {% for rnd in completed_rounds %}
+                        <td style="text-align: center; font-size: 0.9em;">
+                            <span {% if player.round_picks[rnd]['450'][1] %}class="random-pick"{% endif %}>
+                                {{ player.round_picks[rnd]['450'][0] }}
+                            </span>
+                            |
+                            <span {% if player.round_picks[rnd]['250'][1] %}class="random-pick"{% endif %}>
+                                {{ player.round_picks[rnd]['250'][0] }}
+                            </span>
+                        </td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <p style="margin-top: 20px; color: #718096; font-size: 0.9em;">
+            <span class="random-pick">Red text</span> = random auto-pick (missed deadline)
+        </p>
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
+    ''', player_data=player_data, completed_rounds=completed_rounds, session=session)
 
 @app.route('/logout')
 def logout():
