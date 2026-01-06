@@ -13,7 +13,7 @@ from zipfile import ZipFile
 from io import BytesIO
 
 app = Flask(__name__)
-app.secret_key = 'change_this_to_a_long_random_string_right_now!'  # CHANGE THIS!
+app.secret_key = 'SLRACINGsuper_random_key_2026_smxfantasy!@#123'  # CHANGE THIS!
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
