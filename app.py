@@ -1,7 +1,7 @@
 from flask import Flask, request, redirect, url_for, render_template_string, session, flash
 from werkzeug.security import generate_password_hash, check_password_hash
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import requests
 from bs4 import BeautifulSoup
 import random
@@ -9,16 +9,18 @@ import random
 app = Flask(__name__)
 app.secret_key = 'change_this_to_a_long_random_string_right_now!'  # CHANGE THIS ON RENDER!
 
+# 2026 Supercross Schedule - only race dates needed (deadline auto-calculated)
 SCHEDULE = [
-    {'round': 1, 'date': '2026-01-10', 'location': 'Anaheim, CA', 'deadline': '2026-01-09 23:59:59'},
-    {'round': 2, 'date': '2026-01-17', 'location': 'San Diego, CA', 'deadline': '2026-01-16 23:59:59'},
-    {'round': 3, 'date': '2026-01-24', 'location': 'Anaheim, CA', 'deadline': '2026-01-23 23:59:59'},
-    {'round': 4, 'date': '2026-01-31', 'location': 'Houston, TX', 'deadline': '2026-01-30 23:59:59'},
-    {'round': 5, 'date': '2026-02-07', 'location': 'Glendale, AZ', 'deadline': '2026-02-06 23:59:59'},
-    {'round': 6, 'date': '2026-02-14', 'location': 'Seattle, WA', 'deadline': '2026-02-13 23:59:59'},
-    {'round': 7, 'date': '2026-02-21', 'location': 'Arlington, TX', 'deadline': '2026-02-20 23:59:59'},
-    {'round': 8, 'date': '2026-02-28', 'location': 'Daytona Beach, FL', 'deadline': '2026-02-27 23:59:59'},
-    {'round': 9, 'date': '2026-03-07', 'location': 'Indianapolis, IN', 'deadline': '2026-03-06 23:59:59'},
+    {'round': 1, 'date': '2026-01-10', 'location': 'Anaheim, CA'},
+    {'round': 2, 'date': '2026-01-17', 'location': 'San Diego, CA'},
+    {'round': 3, 'date': '2026-01-24', 'location': 'Anaheim, CA'},
+    {'round': 4, 'date': '2026-01-31', 'location': 'Houston, TX'},
+    {'round': 5, 'date': '2026-02-07', 'location': 'Glendale, AZ'},
+    {'round': 6, 'date': '2026-02-14', 'location': 'Seattle, WA'},
+    {'round': 7, 'date': '2026-02-21', 'location': 'Arlington, TX'},
+    {'round': 8, 'date': '2026-02-28', 'location': 'Daytona Beach, FL'},
+    {'round': 9, 'date': '2026-03-07', 'location': 'Indianapolis, IN'},
+    # Add future rounds here as dates are announced
 ]
 
 RIDERS_450 = [
@@ -67,6 +69,15 @@ def get_current_round():
         if now < race_date:
             return i + 1
     return len(SCHEDULE) + 1
+
+def get_deadline_for_round(round_num):
+    sched = next((s for s in SCHEDULE if s['round'] == round_num), None)
+    if not sched:
+        return None
+    race_date = datetime.strptime(sched['date'], '%Y-%m-%d')
+    deadline = race_date - timedelta(days=1)
+    deadline = deadline.replace(hour=23, minute=59, second=59)
+    return deadline
 
 def normalize_rider(name):
     return ' '.join(word.capitalize() for word in name.strip().lower().split())
@@ -209,7 +220,8 @@ def pick(round_num):
         flash('Invalid round')
         return redirect(url_for('dashboard'))
     
-    deadline_passed = datetime.now() > datetime.strptime(sched['deadline'], '%Y-%m-%d %H:%M:%S')
+    deadline = get_deadline_for_round(round_num)
+    deadline_passed = datetime.now() > deadline
     
     conn = sqlite3.connect('fantasy.db')
     c = conn.cursor()
@@ -217,7 +229,7 @@ def pick(round_num):
     c.execute('SELECT class, rider, auto_random FROM picks WHERE user_id = ? AND round_num = ?', 
               (session['user_id'], round_num))
     existing = c.fetchall()
-    existing_picks = {row[0]: (row[1], row[2]) for row in existing}  # (rider, auto_random flag)
+    existing_picks = {row[0]: (row[1], row[2]) for row in existing}
     
     if request.method == 'POST' and not deadline_passed:
         rider_450 = request.form.get('rider_450')
@@ -264,7 +276,7 @@ def pick(round_num):
     
     message = ""
     if deadline_passed:
-        message = "Picks locked for this round."
+        message = f"Picks locked (deadline was midnight { (deadline - timedelta(days=1)).strftime('%B %d') })."
         if any(existing_picks.get(cls, (None, 0))[1] for cls in ['450', '250']):
             message += " <strong style='color:red;'>Random picks applied.</strong>"
     
@@ -401,7 +413,7 @@ def rules():
     <ul>
         <li>Pick <strong>ONE rider from 450</strong> and <strong>ONE from 250</strong> each round.</li>
         <li>Must pick both classes.</li>
-        <li>Picks lock at midnight the night before the race.</li>
+        <li>Picks lock at <strong>midnight the night before each race</strong>.</li>
     </ul>
     <h2>Missed Picks?</h2>
     <ul>
@@ -430,21 +442,19 @@ def leaderboard():
     c.execute('SELECT id, username FROM users ORDER BY username')
     users = c.fetchall()
     
-    # Get all completed rounds (those with results)
     completed_rounds = []
     for r in range(1, len(SCHEDULE)+1):
         c.execute('SELECT COUNT(*) FROM results WHERE round_num = ?', (r,))
         if c.fetchone()[0] > 0:
             completed_rounds.append(r)
     
-    # Build data structure
     player_data = []
     for user_id, username in users:
         total = 0
         round_picks = {}
         
         for rnd in completed_rounds:
-            picks = {'450': ('—', False), '250': ('—', False)}  # (initials, is_random)
+            picks = {'450': ('—', False), '250': ('—', False)}
             for cls in ['450', '250']:
                 c.execute('SELECT rider, auto_random FROM picks WHERE user_id = ? AND round_num = ? AND class = ?',
                           (user_id, rnd, cls))
@@ -452,7 +462,6 @@ def leaderboard():
                 if row:
                     initials = get_initials(row[0])
                     picks[cls] = (initials, bool(row[1]))
-                    # Add points
                     c.execute('SELECT position FROM results WHERE round_num = ? AND class = ? AND rider = ?', 
                               (rnd, cls, row[0]))
                     pos = c.fetchone()
@@ -466,7 +475,6 @@ def leaderboard():
             'round_picks': round_picks
         })
     
-    # Sort by total descending
     player_data.sort(key=lambda x: x['total'], reverse=True)
     
     conn.close()
@@ -492,9 +500,8 @@ def leaderboard():
                 <td style="text-align:center; font-weight:bold; font-size:18px;">{{ player.total }}</td>
                 {% for rnd in completed_rounds %}
                 <td style="text-align:center;">
-                    {% set rnd_picks = player.round_picks[rnd] %}
-                    <span {% if rnd_picks['450'][1] %}style="color:red;"{% endif %}>{{ rnd_picks['450'][0] }}</span> |
-                    <span {% if rnd_picks['250'][1] %}style="color:red;"{% endif %}>{{ rnd_picks['250'][0] }}</span>
+                    <span {% if player.round_picks[rnd]['450'][1] %}style="color:red;"{% endif %}>{{ player.round_picks[rnd]['450'][0] }}</span> |
+                    <span {% if player.round_picks[rnd]['250'][1] %}style="color:red;"{% endif %}>{{ player.round_picks[rnd]['250'][0] }}</span>
                 </td>
                 {% endfor %}
             </tr>
