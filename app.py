@@ -150,46 +150,53 @@ def get_base_style():
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Roboto', 'Oxygen', 'Ubuntu', sans-serif;
+            background: #1a1a1a;
             min-height: 100vh;
             padding: 20px;
+            color: #e8e8e8;
         }
         .container {
             max-width: 1200px;
             margin: 0 auto;
-            background: white;
-            border-radius: 15px;
-            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            background: #2d2d2d;
+            border-radius: 12px;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.4);
             padding: 40px;
+            border: 1px solid #3d3d3d;
         }
         h1, h2, h3 {
-            color: #2d3748;
+            color: #f5f5f5;
             margin-bottom: 20px;
         }
-        h1 { font-size: 2.5em; border-bottom: 4px solid #667eea; padding-bottom: 15px; }
-        h2 { font-size: 2em; color: #667eea; }
-        h3 { font-size: 1.5em; color: #764ba2; margin-top: 30px; }
+        h1 { font-size: 2.5em; border-bottom: 3px solid #c9975b; padding-bottom: 15px; }
+        h2 { font-size: 2em; color: #c9975b; }
+        h3 { font-size: 1.5em; color: #d4a574; margin-top: 30px; }
         .btn {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: #c9975b;
+            color: #1a1a1a;
             padding: 12px 30px;
             border: none;
-            border-radius: 8px;
+            border-radius: 6px;
             font-size: 16px;
             font-weight: 600;
             cursor: pointer;
             text-decoration: none;
             display: inline-block;
-            transition: transform 0.2s, box-shadow 0.2s;
+            transition: all 0.2s;
             margin: 5px;
         }
         .btn:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 10px 20px rgba(0,0,0,0.2);
+            background: #d4a574;
+            transform: translateY(-1px);
+            box-shadow: 0 4px 12px rgba(201, 151, 91, 0.3);
         }
         .btn-danger {
-            background: linear-gradient(135deg, #f56565 0%, #c53030 100%);
+            background: #e74c3c;
+            color: white;
+        }
+        .btn-danger:hover {
+            background: #c0392b;
         }
         .btn-small {
             padding: 8px 16px;
@@ -198,68 +205,78 @@ def get_base_style():
         input[type="text"], input[type="password"], input[type="email"], input[type="number"], select {
             width: 100%;
             padding: 12px;
-            border: 2px solid #e2e8f0;
-            border-radius: 8px;
+            border: 1px solid #4a4a4a;
+            border-radius: 6px;
             font-size: 16px;
             margin: 8px 0;
+            background: #3a3a3a;
+            color: #e8e8e8;
             transition: border-color 0.3s;
         }
         input:focus, select:focus {
             outline: none;
-            border-color: #667eea;
+            border-color: #c9975b;
+            background: #404040;
         }
         table {
             width: 100%;
             border-collapse: collapse;
             margin: 20px 0;
-            box-shadow: 0 5px 15px rgba(0,0,0,0.1);
-            border-radius: 10px;
+            border-radius: 8px;
             overflow: hidden;
+            border: 1px solid #3d3d3d;
         }
         th {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: #3d3d3d;
+            color: #c9975b;
             padding: 15px;
             text-align: left;
             font-weight: 600;
+            border-bottom: 2px solid #c9975b;
         }
         td {
             padding: 12px 15px;
-            border-bottom: 1px solid #e2e8f0;
+            border-bottom: 1px solid #3d3d3d;
+            color: #d0d0d0;
         }
         tr:hover {
-            background-color: #f7fafc;
+            background-color: #353535;
         }
-        tr:nth-child(even) {
-            background-color: #f8f9fa;
+        tbody tr:nth-child(even) {
+            background-color: #2a2a2a;
+        }
+        tbody tr:nth-child(odd) {
+            background-color: #2d2d2d;
         }
         .flash {
             padding: 15px 20px;
             margin: 20px 0;
-            border-radius: 8px;
-            background: #48bb78;
+            border-radius: 6px;
+            background: #27ae60;
             color: white;
             font-weight: 500;
+            border-left: 4px solid #2ecc71;
         }
         .link {
-            color: #667eea;
+            color: #c9975b;
             text-decoration: none;
             font-weight: 600;
             transition: color 0.3s;
         }
         .link:hover {
-            color: #764ba2;
+            color: #d4a574;
             text-decoration: underline;
         }
         .card {
-            background: #f7fafc;
-            border-radius: 10px;
+            background: #363636;
+            border-radius: 8px;
             padding: 20px;
             margin: 15px 0;
-            border-left: 5px solid #667eea;
+            border-left: 4px solid #c9975b;
+            border: 1px solid #3d3d3d;
         }
         .random-pick {
-            color: #e53e3e;
+            color: #e74c3c;
             font-weight: 600;
         }
         .dashboard-grid {
@@ -269,29 +286,46 @@ def get_base_style():
             margin: 30px 0;
         }
         .dashboard-card {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
+            background: #363636;
+            color: #e8e8e8;
             padding: 30px;
-            border-radius: 15px;
+            border-radius: 8px;
             text-align: center;
-            transition: transform 0.3s, box-shadow 0.3s;
+            transition: all 0.3s;
             cursor: pointer;
+            border: 2px solid #4a4a4a;
         }
         .dashboard-card:hover {
-            transform: translateY(-5px);
-            box-shadow: 0 15px 30px rgba(0,0,0,0.3);
+            transform: translateY(-3px);
+            box-shadow: 0 8px 20px rgba(201, 151, 91, 0.2);
+            border-color: #c9975b;
         }
         .dashboard-card h3 {
-            color: white;
-            margin: 0;
+            color: #c9975b;
+            margin: 10px 0 0 0;
+        }
+        .dashboard-card p {
+            color: #b0b0b0;
+            margin-top: 5px;
         }
         hr {
             border: none;
-            border-top: 2px solid #e2e8f0;
+            border-top: 1px solid #4a4a4a;
             margin: 30px 0;
+        }
+        label {
+            color: #d0d0d0;
+            font-weight: 500;
         }
     </style>
     '''
+
+def get_round_location(round_num):
+    """Get the location name for a given round"""
+    sched = next((s for s in SCHEDULE if s['round'] == round_num), None)
+    if sched:
+        return sched['location'].split(',')[0]
+    return ""
 
 @app.route('/', methods=['GET', 'POST'])
 def login():
@@ -310,7 +344,7 @@ def login():
         flash('Invalid credentials')
     return render_template_string(get_base_style() + '''
     <div class="container">
-        <h1>🏍️ SuperMotocross Fantasy League</h1>
+        <h1>🏍️ SL Racing SMX Tipping Comp</h1>
         <div class="card">
             <h2>Login</h2>
             {% with messages = get_flashed_messages() %}
@@ -355,7 +389,7 @@ def register():
             conn.close()
     return render_template_string(get_base_style() + '''
     <div class="container">
-        <h1>🏍️ Register for Fantasy League</h1>
+        <h1>🏍️ Register for SL Racing SMX Tipping Comp</h1>
         <div class="card">
             {% with messages = get_flashed_messages() %}
                 {% if messages %}
@@ -388,11 +422,12 @@ def dashboard():
     if 'user_id' not in session:
         return redirect(url_for('login'))
     current_round = get_current_round()
+    location = get_round_location(current_round)
     return render_template_string(get_base_style() + '''
     <div class="container">
         <h1>Welcome, {{ username }}! 🏁</h1>
-        <p style="font-size: 1.2em; color: #718096; margin-bottom: 30px;">
-            <strong>Current Round:</strong> {{ current_round }}
+        <p style="font-size: 1.2em; color: #b0b0b0; margin-bottom: 30px;">
+            <strong>Current Round:</strong> {{ current_round }} {{ location }}
         </p>
         
         <div class="dashboard-grid">
@@ -400,7 +435,7 @@ def dashboard():
                 <div class="dashboard-card">
                     <h3>🏍️</h3>
                     <h3>Make Picks</h3>
-                    <p>Round {{ current_round }}</p>
+                    <p>Round {{ current_round }} {{ location }}</p>
                 </div>
             </a>
             
@@ -436,7 +471,7 @@ def dashboard():
             <a href="/logout" class="link">Logout</a>
         </div>
     </div>
-    ''', username=session['username'], current_round=current_round)
+    ''', username=session['username'], current_round=current_round, location=location)
 
 @app.route('/pick/<int:round_num>', methods=['GET', 'POST'])
 def pick(round_num):
@@ -526,11 +561,13 @@ def pick(round_num):
     if deadline_passed:
         message = f"Picks locked (deadline was midnight { (deadline - timedelta(days=1)).strftime('%B %d') })."
         if any(existing_picks.get(cls, (None, 0))[1] for cls in ['450', '250']):
-            message += " <strong style='color:red;'>Random picks applied.</strong>"
+            message += " <strong style='color:#e74c3c;'>Random picks applied.</strong>"
+    
+    location = get_round_location(round_num)
     
     return render_template_string(get_base_style() + '''
     <div class="container">
-        <h2>🏍️ Round {{ round_num }} Picks</h2>
+        <h2>🏍️ Round {{ round_num }} {{ location }} - Picks</h2>
         {% with messages = get_flashed_messages() %}
             {% if messages %}
                 {% for message in messages %}
@@ -631,7 +668,7 @@ def pick(round_num):
     </div>
     ''', round_num=round_num, riders_450=RIDERS_450, riders_250=RIDERS_250,
          existing_picks=existing_picks, message=message, deadline_passed=deadline_passed,
-         other_players_picks=other_players_picks)
+         other_players_picks=other_players_picks, location=location)
 
 @app.route('/fetch_results/<int:round_num>')
 def fetch_results(round_num):
@@ -671,9 +708,12 @@ def admin(round_num):
         conn.commit()
         conn.close()
         flash('Manual results saved')
+    
+    location = get_round_location(round_num)
+    
     return render_template_string(get_base_style() + '''
     <div class="container">
-        <h1>🔧 Manual Results Entry - Round {{ round_num }}</h1>
+        <h1>🔧 Manual Results Entry - Round {{ round_num }} {{ location }}</h1>
         
         {% with messages = get_flashed_messages() %}
             {% if messages %}
@@ -705,7 +745,7 @@ def admin(round_num):
             <a href="/dashboard" class="link">← Back to Dashboard</a>
         </div>
     </div>
-    ''', round_num=round_num, RIDERS_450=RIDERS_450, RIDERS_250=RIDERS_250)
+    ''', round_num=round_num, RIDERS_450=RIDERS_450, RIDERS_250=RIDERS_250, location=location)
 
 @app.route('/admin/users', methods=['GET', 'POST'])
 def admin_users():
@@ -830,7 +870,7 @@ def rules():
         return redirect(url_for('login'))
     return render_template_string(get_base_style() + '''
     <div class="container">
-        <h1>📋 Fantasy League Rules</h1>
+        <h1>📋 Tipping Comp Rules</h1>
         
         <div class="card">
             <h3 style="margin-top: 0;">🏍️ How to Play</h3>
@@ -859,14 +899,14 @@ def rules():
         
         <div class="card">
             <h3 style="margin-top: 0;">🏆 Scoring</h3>
-            <table style="margin: 15px 0; box-shadow: none;">
-                <tr><td><strong>1st Place:</strong></td><td>25 points</td></tr>
-                <tr><td><strong>2nd Place:</strong></td><td>22 points</td></tr>
-                <tr><td><strong>3rd Place:</strong></td><td>20 points</td></tr>
-                <tr><td><strong>4th Place:</strong></td><td>18 points</td></tr>
-                <tr><td><strong>5th Place:</strong></td><td>16 points</td></tr>
-                <tr><td><strong>6th-22nd:</strong></td><td>15 down to 1 point</td></tr>
-                <tr><td><strong>23rd+:</strong></td><td>0 points</td></tr>
+            <table style="margin: 15px 0; box-shadow: none; border: none;">
+                <tr><td style="border: none;"><strong>1st Place:</strong></td><td style="border: none;">25 points</td></tr>
+                <tr><td style="border: none;"><strong>2nd Place:</strong></td><td style="border: none;">22 points</td></tr>
+                <tr><td style="border: none;"><strong>3rd Place:</strong></td><td style="border: none;">20 points</td></tr>
+                <tr><td style="border: none;"><strong>4th Place:</strong></td><td style="border: none;">18 points</td></tr>
+                <tr><td style="border: none;"><strong>5th Place:</strong></td><td style="border: none;">16 points</td></tr>
+                <tr><td style="border: none;"><strong>6th-22nd:</strong></td><td style="border: none;">15 down to 1 point</td></tr>
+                <tr><td style="border: none;"><strong>23rd+:</strong></td><td style="border: none;">0 points</td></tr>
             </table>
             <p style="margin-top: 15px;"><strong>Round Score</strong> = 450 pick points + 250 pick points</p>
             <p><strong>Season Winner</strong> = Player with highest total points!</p>
@@ -939,14 +979,14 @@ def leaderboard():
                         <th>Player</th>
                         <th style="text-align: center;">Total Points</th>
                         {% for rnd in completed_rounds %}
-                        <th style="text-align: center;">R{{ rnd }}<br><small>450 | 250</small></th>
+                        <th style="text-align: center;">R{{ rnd }} {{ get_round_location(rnd) }}<br><small>450 | 250</small></th>
                         {% endfor %}
                     </tr>
                 </thead>
                 <tbody>
                     {% for i in range(player_data|length) %}
                     {% set player = player_data[i] %}
-                    <tr {% if player.username == session.username %}style="background: #e6f7ff; font-weight: 600;"{% endif %}>
+                    <tr {% if player.username == session.username %}style="background: #3d3d3d; font-weight: 600; border-left: 3px solid #c9975b;"{% endif %}>
                         <td style="text-align: center; font-size: 1.3em; font-weight: bold;">
                             {% if i == 0 %}🥇
                             {% elif i == 1 %}🥈
@@ -955,7 +995,7 @@ def leaderboard():
                             {% endif %}
                         </td>
                         <td style="font-weight: 600;">{{ player.username }}</td>
-                        <td style="text-align: center; font-size: 1.4em; font-weight: bold; color: #667eea;">
+                        <td style="text-align: center; font-size: 1.4em; font-weight: bold; color: #c9975b;">
                             {{ player.total }}
                         </td>
                         {% for rnd in completed_rounds %}
@@ -975,7 +1015,7 @@ def leaderboard():
             </table>
         </div>
         
-        <p style="margin-top: 20px; color: #718096; font-size: 0.9em;">
+        <p style="margin-top: 20px; color: #b0b0b0; font-size: 0.9em;">
             <span class="random-pick">Red text</span> = random auto-pick (missed deadline)
         </p>
         
@@ -983,7 +1023,7 @@ def leaderboard():
             <a href="/dashboard" class="link">← Back to Dashboard</a>
         </div>
     </div>
-    ''', player_data=player_data, completed_rounds=completed_rounds, session=session)
+    ''', player_data=player_data, completed_rounds=completed_rounds, session=session, get_round_location=get_round_location)
 
 @app.route('/logout')
 def logout():
