@@ -13,7 +13,7 @@ from zipfile import ZipFile
 from io import BytesIO
 
 app = Flask(__name__)
-app.secret_key = SLRACING_25102024_Finke  # CHANGE THIS!
+app.secret_key = 'SLRACING_25102024_Finke'  # CHANGE THIS!
 
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
