@@ -243,6 +243,26 @@ def pick(round_num):
     existing = c.fetchall()
     existing_picks = {row['class']: (row['rider'], row['auto_random']) for row in existing}
     
+    # Get all other players' picks for this round
+    c.execute('''SELECT u.username, p.class, p.rider, p.auto_random 
+                 FROM picks p 
+                 JOIN users u ON p.user_id = u.id 
+                 WHERE p.round_num = %s AND p.user_id != %s 
+                 ORDER BY u.username, p.class''', 
+              (round_num, session['user_id']))
+    other_picks_raw = c.fetchall()
+    
+    # Organize other players' picks by username
+    other_players_picks = {}
+    for pick in other_picks_raw:
+        username = pick['username']
+        if username not in other_players_picks:
+            other_players_picks[username] = {'450': None, '250': None}
+        other_players_picks[username][pick['class']] = {
+            'rider': pick['rider'],
+            'auto_random': pick['auto_random']
+        }
+    
     if request.method == 'POST' and not deadline_passed:
         rider_450 = request.form.get('rider_450')
         rider_250 = request.form.get('rider_250')
@@ -324,9 +344,46 @@ def pick(round_num):
         </form>
     {% endif %}
     
+    {% if other_players_picks %}
+    <hr style="margin-top:30px;">
+    <h3>Other Players' Picks for Round {{ round_num }}</h3>
+    <table border="1" style="border-collapse:collapse; width:90%; text-align:left; margin-top:15px;">
+        <tr style="background:#f0f0f0;">
+            <th style="padding:8px;">Player</th>
+            <th style="padding:8px;">450 Class</th>
+            <th style="padding:8px;">250 Class</th>
+        </tr>
+        {% for player, picks in other_players_picks.items() %}
+        <tr>
+            <td style="padding:8px; font-weight:bold;">{{ player }}</td>
+            <td style="padding:8px;">
+                {% if picks['450'] %}
+                    {{ picks['450']['rider'] }}
+                    {% if picks['450']['auto_random'] %}<span style="color:red; font-size:12px;"> (Random)</span>{% endif %}
+                {% else %}
+                    <span style="color:#999;">Not picked yet</span>
+                {% endif %}
+            </td>
+            <td style="padding:8px;">
+                {% if picks['250'] %}
+                    {{ picks['250']['rider'] }}
+                    {% if picks['250']['auto_random'] %}<span style="color:red; font-size:12px;"> (Random)</span>{% endif %}
+                {% else %}
+                    <span style="color:#999;">Not picked yet</span>
+                {% endif %}
+            </td>
+        </tr>
+        {% endfor %}
+    </table>
+    {% else %}
+    <hr style="margin-top:30px;">
+    <p><em>No other players have made picks for this round yet.</em></p>
+    {% endif %}
+    
     <br><a href="/dashboard">← Back to Dashboard</a>
     ''', round_num=round_num, riders_450=RIDERS_450, riders_250=RIDERS_250,
-         existing_picks=existing_picks, message=message, deadline_passed=deadline_passed)
+         existing_picks=existing_picks, message=message, deadline_passed=deadline_passed,
+         other_players_picks=other_players_picks)
 
 @app.route('/fetch_results/<int:round_num>')
 def fetch_results(round_num):
