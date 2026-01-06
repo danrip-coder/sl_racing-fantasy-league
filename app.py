@@ -6,7 +6,7 @@ import requests
 from bs4 import BeautifulSoup
 
 app = Flask(__name__)
-app.secret_key = 'change_this_to_a_random_long_string_for_security'  # CHANGE THIS!
+app.secret_key = 'SLRACINGsuper_random_key_2026_smxfantasy!@#123'  # CHANGE THIS!
 
 # 2026 SuperMotocross Schedule (Supercross rounds only for now - update as Pro Motocross dates are confirmed)
 SCHEDULE = [
