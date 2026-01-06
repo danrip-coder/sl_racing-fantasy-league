@@ -28,6 +28,14 @@ SCHEDULE = [
     {'round': 7, 'date': '2026-02-21', 'location': 'Arlington, TX'},
     {'round': 8, 'date': '2026-02-28', 'location': 'Daytona Beach, FL'},
     {'round': 9, 'date': '2026-03-07', 'location': 'Indianapolis, IN'},
+    {'round': 10, 'date': '2026-03-21', 'location': 'Birmingham, AL'},
+    {'round': 11, 'date': '2026-03-28', 'location': 'Detroit, MI'},
+    {'round': 12, 'date': '2026-04-04', 'location': 'St.Louis, MO'},
+    {'round': 13, 'date': '2026-04-11', 'location': 'Nashville, TN'},
+    {'round': 14, 'date': '2026-04-18', 'location': 'Cleveland, OH'},
+    {'round': 15, 'date': '2026-04-25', 'location': 'Philadelphia, PA'},
+    {'round': 16, 'date': '2026-05-02', 'location': 'Denver, CO'},
+    {'round': 17, 'date': '2026-05-09', 'location': 'Salt Lake City, UT'},
     # Add future rounds here as dates are announced
 ]
 
