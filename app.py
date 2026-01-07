@@ -28,29 +28,19 @@ SCHEDULE = [
     {'round': 7, 'date': '2026-02-21', 'location': 'Arlington, TX'},
     {'round': 8, 'date': '2026-02-28', 'location': 'Daytona Beach, FL'},
     {'round': 9, 'date': '2026-03-07', 'location': 'Indianapolis, IN'},
-    {'round': 10, 'date': '2026-03-21', 'location': 'Birmingham, AL'},
-    {'round': 11, 'date': '2026-03-28', 'location': 'Detroit, MI'},
-    {'round': 12, 'date': '2026-04-04', 'location': 'St.Louis, MO'},
-    {'round': 13, 'date': '2026-04-11', 'location': 'Nashville, TN'},
-    {'round': 14, 'date': '2026-04-18', 'location': 'Cleveland, OH'},
-    {'round': 15, 'date': '2026-04-25', 'location': 'Philadelphia, PA'},
-    {'round': 16, 'date': '2026-05-02', 'location': 'Denver, CO'},
-    {'round': 17, 'date': '2026-05-09', 'location': 'Salt Lake City, UT'},
     # Add future rounds here as dates are announced
 ]
 
 RIDERS_450 = [
     'Chase Sexton', 'Cooper Webb', 'Eli Tomac', 'Hunter Lawrence', 'Jett Lawrence',
     'Ken Roczen', 'Jason Anderson', 'Aaron Plessinger', 'Malcolm Stewart', 'Dylan Ferrandis',
-    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig', 'Joey Savatgy',
-    'Christian Craig', 'Justin Cooper', 'Austin Forkner'  
+    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig'
 ]
 
 RIDERS_250 = [
     'Haiden Deegan', 'Levi Kitchen', 'Chance Hymas', 'Ryder DiFrancesco', 'Max Anstie',
     'Cameron McAdoo', 'Nate Thrasher', 'Jalek Swoll', 'Casey Cochran', 'Daxton Bennick',
-    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle', 'Max Vohland', 'Michael Mosiman', 
-    'Parker Ross', 'Carson Mumford' 
+    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle'
 ]
 
 def get_db_connection():
@@ -327,6 +317,47 @@ def get_base_style():
             color: #d0d0d0;
             font-weight: 500;
         }
+        .countdown-timer {
+            background: #363636;
+            border: 2px solid #c9975b;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px 0;
+            text-align: center;
+        }
+        .countdown-timer h3 {
+            color: #c9975b;
+            margin: 0 0 15px 0;
+        }
+        .countdown-display {
+            display: flex;
+            justify-content: center;
+            gap: 20px;
+            flex-wrap: wrap;
+        }
+        .countdown-unit {
+            background: #2d2d2d;
+            border-radius: 6px;
+            padding: 15px 20px;
+            min-width: 80px;
+        }
+        .countdown-number {
+            font-size: 2em;
+            font-weight: bold;
+            color: #c9975b;
+            display: block;
+        }
+        .countdown-label {
+            font-size: 0.9em;
+            color: #b0b0b0;
+            display: block;
+            margin-top: 5px;
+        }
+        .countdown-expired {
+            color: #e74c3c;
+            font-size: 1.2em;
+            font-weight: 600;
+        }
     </style>
     '''
 
@@ -504,22 +535,22 @@ def pick(round_num):
     existing = c.fetchall()
     existing_picks = {row['class']: (row['rider'], row['auto_random']) for row in existing}
     
-    # Get all other players' picks for this round
+    # Get ALL players' picks for this round (including current user)
     c.execute('''SELECT u.username, p.class, p.rider, p.auto_random 
                  FROM picks p 
                  JOIN users u ON p.user_id = u.id 
-                 WHERE p.round_num = %s AND p.user_id != %s 
+                 WHERE p.round_num = %s 
                  ORDER BY u.username, p.class''', 
-              (round_num, session['user_id']))
-    other_picks_raw = c.fetchall()
+              (round_num,))
+    all_picks_raw = c.fetchall()
     
-    # Organize other players' picks by username
-    other_players_picks = {}
-    for pick in other_picks_raw:
+    # Organize all players' picks by username
+    all_players_picks = {}
+    for pick in all_picks_raw:
         username = pick['username']
-        if username not in other_players_picks:
-            other_players_picks[username] = {'450': None, '250': None}
-        other_players_picks[username][pick['class']] = {
+        if username not in all_players_picks:
+            all_players_picks[username] = {'450': None, '250': None}
+        all_players_picks[username][pick['class']] = {
             'rider': pick['rider'],
             'auto_random': pick['auto_random']
         }
@@ -575,6 +606,9 @@ def pick(round_num):
     
     location = get_round_location(round_num)
     
+    # Get deadline in ISO format for JavaScript
+    deadline_iso = deadline.isoformat() if deadline else None
+    
     return render_template_string(get_base_style() + '''
     <div class="container">
         <h2>🏍️ Round {{ round_num }} {{ location }} - Picks</h2>
@@ -592,9 +626,60 @@ def pick(round_num):
             </div>
         {% endif %}
         
+        {% if not deadline_passed and deadline_iso %}
+        <div class="countdown-timer">
+            <h3>⏰ Picks Lock In:</h3>
+            <div class="countdown-display" id="countdown">
+                <div class="countdown-unit">
+                    <span class="countdown-number" id="days">--</span>
+                    <span class="countdown-label">Days</span>
+                </div>
+                <div class="countdown-unit">
+                    <span class="countdown-number" id="hours">--</span>
+                    <span class="countdown-label">Hours</span>
+                </div>
+                <div class="countdown-unit">
+                    <span class="countdown-number" id="minutes">--</span>
+                    <span class="countdown-label">Minutes</span>
+                </div>
+                <div class="countdown-unit">
+                    <span class="countdown-number" id="seconds">--</span>
+                    <span class="countdown-label">Seconds</span>
+                </div>
+            </div>
+        </div>
+        <script>
+            const deadline = new Date("{{ deadline_iso }}");
+            
+            function updateCountdown() {
+                const now = new Date();
+                const diff = deadline - now;
+                
+                if (diff <= 0) {
+                    document.getElementById('countdown').innerHTML = '<p class="countdown-expired">Picks are now locked!</p>';
+                    setTimeout(() => location.reload(), 2000);
+                    return;
+                }
+                
+                const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                const hours = Math.floor((diff % (1000 * 60 * 60 * 24)) / (1000 * 60 * 60));
+                const minutes = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+                const seconds = Math.floor((diff % (1000 * 60)) / 1000);
+                
+                document.getElementById('days').textContent = days.toString().padStart(2, '0');
+                document.getElementById('hours').textContent = hours.toString().padStart(2, '0');
+                document.getElementById('minutes').textContent = minutes.toString().padStart(2, '0');
+                document.getElementById('seconds').textContent = seconds.toString().padStart(2, '0');
+            }
+            
+            updateCountdown();
+            setInterval(updateCountdown, 1000);
+        </script>
+        {% endif %}
+        
         {% if deadline_passed %}
             <div class="card">
-                <h3 style="margin-top: 0;">Your Picks</h3>
+                <h3 style="margin-top: 0;">Your Picks (Locked)</h3>
                 <p><strong>450 Class:</strong> {{ existing_picks['450'][0] if '450' in existing_picks else 'None' }}
                     {% if '450' in existing_picks and existing_picks['450'][1] %} 
                         <span class="random-pick">(Random)</span>
@@ -609,6 +694,7 @@ def pick(round_num):
         {% else %}
             <form method="post">
                 <div class="card">
+                    <h3 style="margin-top: 0;">{% if existing_picks %}Update Your Picks{% else %}Make Your Picks{% endif %}</h3>
                     <label><strong>450 Class Rider</strong></label>
                     <select name="rider_450">
                         {% for r in riders_450 %}
@@ -623,14 +709,14 @@ def pick(round_num):
                         {% endfor %}
                     </select>
                     
-                    <button type="submit" class="btn">Save Picks</button>
+                    <button type="submit" class="btn">{% if existing_picks %}Update Picks{% else %}Save Picks{% endif %}</button>
                 </div>
             </form>
         {% endif %}
         
-        {% if other_players_picks %}
+        {% if all_players_picks %}
         <hr>
-        <h3>Other Players' Picks</h3>
+        <h3>Current Round Picks</h3>
         <table>
             <thead>
                 <tr>
@@ -640,9 +726,12 @@ def pick(round_num):
                 </tr>
             </thead>
             <tbody>
-                {% for player, picks in other_players_picks.items() %}
-                <tr>
-                    <td style="font-weight: 600;">{{ player }}</td>
+                {% for player, picks in all_players_picks.items() %}
+                <tr {% if player == session.username %}style="background: #3d3d3d; border-left: 3px solid #c9975b;"{% endif %}>
+                    <td style="font-weight: 600;">
+                        {{ player }}
+                        {% if player == session.username %}<span style="color: #c9975b;"> (You)</span>{% endif %}
+                    </td>
                     <td>
                         {% if picks['450'] %}
                             {{ picks['450']['rider'] }}
@@ -669,7 +758,7 @@ def pick(round_num):
         </table>
         {% else %}
         <hr>
-        <p style="color: #718096; font-style: italic;">No other players have made picks for this round yet.</p>
+        <p style="color: #b0b0b0; font-style: italic;">No picks have been made for this round yet.</p>
         {% endif %}
         
         <div style="margin-top: 30px;">
@@ -678,7 +767,8 @@ def pick(round_num):
     </div>
     ''', round_num=round_num, riders_450=RIDERS_450, riders_250=RIDERS_250,
          existing_picks=existing_picks, message=message, deadline_passed=deadline_passed,
-         other_players_picks=other_players_picks, location=location)
+         all_players_picks=all_players_picks, location=location, session=session, 
+         deadline_iso=deadline_iso)
 
 @app.route('/fetch_results/<int:round_num>')
 def fetch_results(round_num):
