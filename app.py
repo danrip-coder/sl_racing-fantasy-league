@@ -3,6 +3,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
+import pytz
 import requests
 from bs4 import BeautifulSoup
 import random
@@ -17,26 +18,25 @@ app.secret_key = 'change_this_to_a_long_random_string_right_now!'  # CHANGE THIS
 # PostgreSQL connection
 DATABASE_URL = os.environ.get('DATABASE_URL')
 
-# 2026 Supercross Schedule - only race dates needed (deadline auto-calculated)
+# 2026 Supercross Schedule - with timezone info
 SCHEDULE = [
-    {'round': 1, 'date': '2026-01-10', 'location': 'Anaheim, CA'},
-    {'round': 2, 'date': '2026-01-17', 'location': 'San Diego, CA'},
-    {'round': 3, 'date': '2026-01-24', 'location': 'Anaheim, CA'},
-    {'round': 4, 'date': '2026-01-31', 'location': 'Houston, TX'},
-    {'round': 5, 'date': '2026-02-07', 'location': 'Glendale, AZ'},
-    {'round': 6, 'date': '2026-02-14', 'location': 'Seattle, WA'},
-    {'round': 7, 'date': '2026-02-21', 'location': 'Arlington, TX'},
-    {'round': 8, 'date': '2026-02-28', 'location': 'Daytona Beach, FL'},
-    {'round': 9, 'date': '2026-03-07', 'location': 'Indianapolis, IN'},
-    {'round': 10, 'date': '2026-03-21', 'location': 'Birmingham, AL'},
-    {'round': 11, 'date': '2026-03-28', 'location': 'Detroit, MI'},
-    {'round': 12, 'date': '2026-04-04', 'location': 'St.Louis, MO'},
-    {'round': 13, 'date': '2026-04-11', 'location': 'Nashville, TN'},
-    {'round': 14, 'date': '2026-04-18', 'location': 'Cleveland, OH'},
-    {'round': 15, 'date': '2026-04-25', 'location': 'Philadelphia, PA'},
-    {'round': 16, 'date': '2026-05-02', 'location': 'Denver, CO'},
-    {'round': 17, 'date': '2026-05-09', 'location': 'Salt Lake City, UT'},
-    # Add future rounds here as dates are announced
+    {'round': 1, 'date': '2026-01-10', 'location': 'Anaheim, CA', 'timezone': 'US/Pacific'},
+    {'round': 2, 'date': '2026-01-17', 'location': 'San Diego, CA', 'timezone': 'US/Pacific'},
+    {'round': 3, 'date': '2026-01-24', 'location': 'Anaheim, CA', 'timezone': 'US/Pacific'},
+    {'round': 4, 'date': '2026-01-31', 'location': 'Houston, TX', 'timezone': 'US/Central'},
+    {'round': 5, 'date': '2026-02-07', 'location': 'Glendale, AZ', 'timezone': 'US/Mountain'},
+    {'round': 6, 'date': '2026-02-14', 'location': 'Seattle, WA', 'timezone': 'US/Pacific'},
+    {'round': 7, 'date': '2026-02-21', 'location': 'Arlington, TX', 'timezone': 'US/Central'},
+    {'round': 8, 'date': '2026-02-28', 'location': 'Daytona Beach, FL', 'timezone': 'US/Eastern'},
+    {'round': 9, 'date': '2026-03-07', 'location': 'Indianapolis, IN', 'timezone': 'US/Eastern'},
+    {'round': 10, 'date': '2026-03-21', 'location': 'Birmingham, AL', 'timezone': 'US/Central'},
+    {'round': 11, 'date': '2026-03-28', 'location': 'Detroit, MI', 'timezone': 'US/Eastern'},
+    {'round': 12, 'date': '2026-04-04', 'location': 'St.Louis, MO', 'timezone': 'US/Central'},
+    {'round': 13, 'date': '2026-04-11', 'location': 'Nashville, TN', 'timezone': 'US/Central'},
+    {'round': 14, 'date': '2026-04-18', 'location': 'Cleveland, OH', 'timezone': 'US/Eastern'},
+    {'round': 15, 'date': '2026-04-25', 'location': 'Philadelphia, PA', 'timezone': 'US/Eastern'},
+    {'round': 16, 'date': '2026-05-02', 'location': 'Denver, CO', 'timezone': 'US/Mountain'},
+    {'round': 17, 'date': '2026-05-09', 'location': 'Salt Lake City, UT', 'timezone': 'US/Mountain'},
 ]
 
 RIDERS_450 = [
@@ -84,10 +84,13 @@ def get_initials(name):
     return ''.join(p[0].upper() for p in parts if p)
 
 def get_current_round():
-    now = datetime.now()
+    # Get current time in UTC
+    now_utc = datetime.now(pytz.UTC)
     for i, s in enumerate(SCHEDULE):
-        race_date = datetime.strptime(s['date'], '%Y-%m-%d')
-        if now < race_date:
+        # Parse race date and set timezone
+        tz = pytz.timezone(s['timezone'])
+        race_date = tz.localize(datetime.strptime(s['date'], '%Y-%m-%d'))
+        if now_utc < race_date.astimezone(pytz.UTC):
             return i + 1
     return len(SCHEDULE) + 1
 
@@ -95,9 +98,15 @@ def get_deadline_for_round(round_num):
     sched = next((s for s in SCHEDULE if s['round'] == round_num), None)
     if not sched:
         return None
+    # Get the race's local timezone
+    tz = pytz.timezone(sched['timezone'])
+    # Parse the race date in local time
     race_date = datetime.strptime(sched['date'], '%Y-%m-%d')
-    deadline = race_date - timedelta(days=1)
-    deadline = deadline.replace(hour=23, minute=59, second=59)
+    # Subtract one day and set to 11:59:59 PM in local time
+    deadline_local = race_date - timedelta(days=1)
+    deadline_local = deadline_local.replace(hour=23, minute=59, second=59)
+    # Localize to the race's timezone
+    deadline = tz.localize(deadline_local)
     return deadline
 
 def normalize_rider(name):
@@ -535,7 +544,7 @@ def pick(round_num):
         return redirect(url_for('dashboard'))
     
     deadline = get_deadline_for_round(round_num)
-    deadline_passed = datetime.now() > deadline
+    deadline_passed = datetime.now(pytz.UTC) > deadline
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -618,6 +627,7 @@ def pick(round_num):
     
     # Get deadline in ISO format for JavaScript
     deadline_iso = deadline.isoformat() if deadline else None
+    race_timezone = sched.get('timezone', 'US/Pacific') if sched else 'US/Pacific'
     
     return render_template_string(get_base_style() + '''
     <div class="container">
@@ -639,6 +649,7 @@ def pick(round_num):
         {% if not deadline_passed and deadline_iso %}
         <div class="countdown-timer">
             <h3>⏰ Picks Lock In:</h3>
+            <p style="color: #b0b0b0; margin-bottom: 15px; font-size: 0.9em;">Deadline: Midnight {{ race_timezone.replace('US/', '') }} Time</p>
             <div class="countdown-display" id="countdown">
                 <div class="countdown-unit">
                     <span class="countdown-number" id="days">--</span>
