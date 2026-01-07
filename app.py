@@ -12,7 +12,7 @@ from io import StringIO, BytesIO
 from zipfile import ZipFile
 
 app = Flask(__name__)
-app.secret_key = 'SLRACING_25102024_Finke'  # CHANGE THIS ON RENDER!
+app.secret_key = 'change_this_to_a_long_random_string_right_now!'  # CHANGE THIS ON RENDER!
 
 # PostgreSQL connection
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -28,29 +28,19 @@ SCHEDULE = [
     {'round': 7, 'date': '2026-02-21', 'location': 'Arlington, TX'},
     {'round': 8, 'date': '2026-02-28', 'location': 'Daytona Beach, FL'},
     {'round': 9, 'date': '2026-03-07', 'location': 'Indianapolis, IN'},
-    {'round': 10, 'date': '2026-03-21', 'location': 'Birmingham, AL'},
-    {'round': 11, 'date': '2026-03-28', 'location': 'Detroit, MI'},
-    {'round': 12, 'date': '2026-04-04', 'location': 'St.Louis, MO'},
-    {'round': 13, 'date': '2026-04-11', 'location': 'Nashville, TN'},
-    {'round': 14, 'date': '2026-04-18', 'location': 'Cleveland, OH'},
-    {'round': 15, 'date': '2026-04-25', 'location': 'Philadelphia, PA'},
-    {'round': 16, 'date': '2026-05-02', 'location': 'Denver, CO'},
-    {'round': 17, 'date': '2026-05-09', 'location': 'Salt Lake City, UT'},
     # Add future rounds here as dates are announced
 ]
 
 RIDERS_450 = [
     'Chase Sexton', 'Cooper Webb', 'Eli Tomac', 'Hunter Lawrence', 'Jett Lawrence',
     'Ken Roczen', 'Jason Anderson', 'Aaron Plessinger', 'Malcolm Stewart', 'Dylan Ferrandis',
-    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig', 'Joey Savatgy',
-    'Justin Cooper', 'Austin Forkner'  
+    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig'
 ]
 
 RIDERS_250 = [
     'Haiden Deegan', 'Levi Kitchen', 'Chance Hymas', 'Ryder DiFrancesco', 'Max Anstie',
     'Cameron McAdoo', 'Nate Thrasher', 'Jalek Swoll', 'Casey Cochran', 'Daxton Bennick',
-    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle', 'Max Vohland', 'Michael Mosiman', 
-    'Parker Ross', 'Carson Mumford' 
+    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle'
 ]
 
 def get_db_connection():
@@ -685,3 +675,460 @@ def pick(round_num):
             updateCountdown();
             setInterval(updateCountdown, 1000);
         </script>
+        {% endif %}
+        
+        {% if deadline_passed %}
+            <div class="card">
+                <h3 style="margin-top: 0;">Your Picks (Locked)</h3>
+                <p><strong>450 Class:</strong> {{ existing_picks['450'][0] if '450' in existing_picks else 'None' }}
+                    {% if '450' in existing_picks and existing_picks['450'][1] %} 
+                        <span class="random-pick">(Random)</span>
+                    {% endif %}
+                </p>
+                <p><strong>250 Class:</strong> {{ existing_picks['250'][0] if '250' in existing_picks else 'None' }}
+                    {% if '250' in existing_picks and existing_picks['250'][1] %} 
+                        <span class="random-pick">(Random)</span>
+                    {% endif %}
+                </p>
+            </div>
+        {% else %}
+            <form method="post">
+                <div class="card">
+                    <h3 style="margin-top: 0;">{% if existing_picks %}Update Your Picks{% else %}Make Your Picks{% endif %}</h3>
+                    <label><strong>450 Class Rider</strong></label>
+                    <select name="rider_450">
+                        {% for r in riders_450 %}
+                        <option {% if '450' in existing_picks and existing_picks['450'][0]==r %}selected{% endif %}>{{ r }}</option>
+                        {% endfor %}
+                    </select>
+                    
+                    <label><strong>250 Class Rider</strong></label>
+                    <select name="rider_250">
+                        {% for r in riders_250 %}
+                        <option {% if '250' in existing_picks and existing_picks['250'][0]==r %}selected{% endif %}>{{ r }}</option>
+                        {% endfor %}
+                    </select>
+                    
+                    <button type="submit" class="btn">{% if existing_picks %}Update Picks{% else %}Save Picks{% endif %}</button>
+                </div>
+            </form>
+        {% endif %}
+        
+        {% if all_players_picks %}
+        <hr>
+        <h3>Current Round Picks</h3>
+        <table>
+            <thead>
+                <tr>
+                    <th>Player</th>
+                    <th>450 Class</th>
+                    <th>250 Class</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for player, picks in all_players_picks.items() %}
+                <tr {% if player == session.username %}style="background: #3d3d3d; border-left: 3px solid #c9975b;"{% endif %}>
+                    <td style="font-weight: 600;">
+                        {{ player }}
+                        {% if player == session.username %}<span style="color: #c9975b;"> (You)</span>{% endif %}
+                    </td>
+                    <td>
+                        {% if picks['450'] %}
+                            {{ picks['450']['rider'] }}
+                            {% if picks['450']['auto_random'] %}
+                                <span class="random-pick">(Random)</span>
+                            {% endif %}
+                        {% else %}
+                            <span style="color:#999;">Not picked yet</span>
+                        {% endif %}
+                    </td>
+                    <td>
+                        {% if picks['250'] %}
+                            {{ picks['250']['rider'] }}
+                            {% if picks['250']['auto_random'] %}
+                                <span class="random-pick">(Random)</span>
+                            {% endif %}
+                        {% else %}
+                            <span style="color:#999;">Not picked yet</span>
+                        {% endif %}
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        {% else %}
+        <hr>
+        <p style="color: #b0b0b0; font-style: italic;">No picks have been made for this round yet.</p>
+        {% endif %}
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
+    ''', round_num=round_num, riders_450=RIDERS_450, riders_250=RIDERS_250,
+         existing_picks=existing_picks, message=message, deadline_passed=deadline_passed,
+         all_players_picks=all_players_picks, location=location, session=session, 
+         deadline_iso=deadline_iso)
+
+@app.route('/fetch_results/<int:round_num>')
+def fetch_results(round_num):
+    if session.get('username') != 'admin':
+        return redirect(url_for('login'))
+    event_id = get_event_id(round_num)
+    if not event_id:
+        flash('Event not found or results not available yet')
+        return redirect(url_for('dashboard'))
+    conn = get_db_connection()
+    c = conn.cursor()
+    for cls, riders in [('450', RIDERS_450), ('250', RIDERS_250)]:
+        url = get_overall_url(event_id, cls)
+        if url:
+            results = parse_results(url, cls)
+            for rider, pos in results.items():
+                c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING',
+                          (round_num, cls, rider, pos))
+    conn.commit()
+    conn.close()
+    flash('Results successfully auto-fetched!')
+    return redirect(url_for('dashboard'))
+
+@app.route('/admin/<int:round_num>', methods=['GET', 'POST'])
+def admin(round_num):
+    if session.get('username') != 'admin':
+        return redirect(url_for('login'))
+    if request.method == 'POST':
+        conn = get_db_connection()
+        c = conn.cursor()
+        for cls, riders in [('450', RIDERS_450), ('250', RIDERS_250)]:
+            for rider in riders:
+                pos_str = request.form.get(f'{cls}_{rider.replace(" ", "_")}')
+                if pos_str and pos_str.isdigit():
+                    c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s) ON CONFLICT DO NOTHING',
+                              (round_num, cls, rider, int(pos_str)))
+        conn.commit()
+        conn.close()
+        flash('Manual results saved')
+    
+    location = get_round_location(round_num)
+    
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🔧 Manual Results Entry - Round {{ round_num }} {{ location }}</h1>
+        
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="flash">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <form method="post">
+            {% for cls, riders in [('450', RIDERS_450), ('250', RIDERS_250)] %}
+            <div class="card">
+                <h3 style="margin-top: 0;">{{ cls }} Class Results</h3>
+                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px;">
+                    {% for r in riders %}
+                    <div>
+                        <label style="font-weight: 600;">{{ r }}</label>
+                        <input name="{{ cls }}_{{ r.replace(' ', '_') }}" type="number" min="1" placeholder="Position">
+                    </div>
+                    {% endfor %}
+                </div>
+            </div>
+            {% endfor %}
+            
+            <button type="submit" class="btn">Save Results</button>
+        </form>
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
+    ''', round_num=round_num, RIDERS_450=RIDERS_450, RIDERS_250=RIDERS_250, location=location)
+
+@app.route('/admin/users', methods=['GET', 'POST'])
+def admin_users():
+    if session.get('username') != 'admin':
+        return redirect(url_for('login'))
+    conn = get_db_connection()
+    c = conn.cursor()
+    if request.method == 'POST':
+        action = request.form.get('action')
+        user_id = request.form['user_id']
+        
+        if action == 'reset_password':
+            new_pass = generate_password_hash(request.form['new_password'])
+            c.execute('UPDATE users SET password = %s WHERE id = %s', (new_pass, user_id))
+            conn.commit()
+            flash('Password reset successfully!')
+        elif action == 'delete_user':
+            # Prevent admin from deleting themselves
+            if int(user_id) == session.get('user_id'):
+                flash('Cannot delete your own admin account!')
+            else:
+                # Delete user's picks first (foreign key constraint)
+                c.execute('DELETE FROM picks WHERE user_id = %s', (user_id,))
+                # Delete the user
+                c.execute('DELETE FROM users WHERE id = %s', (user_id,))
+                conn.commit()
+                flash('User deleted successfully!')
+    
+    c.execute('SELECT id, username, email FROM users ORDER BY username')
+    users = c.fetchall()
+    conn.close()
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🔧 Manage Users</h1>
+        
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="flash">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Username</th>
+                    <th>Email</th>
+                    <th>Reset Password</th>
+                    <th>Delete</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td>{{ user['id'] }}</td>
+                    <td style="font-weight: 600;">{{ user['username'] }}</td>
+                    <td>{{ user['email'] or 'No email' }}</td>
+                    <td>
+                        <form method="post" style="display: flex; gap: 10px; align-items: center;">
+                            <input type="hidden" name="action" value="reset_password">
+                            <input type="hidden" name="user_id" value="{{ user['id'] }}">
+                            <input type="password" name="new_password" placeholder="New password" required 
+                                   style="width: 150px; margin: 0;">
+                            <button type="submit" class="btn btn-small">Reset</button>
+                        </form>
+                    </td>
+                    <td>
+                        <form method="post" style="display:inline;" 
+                              onsubmit="return confirm('Are you sure you want to delete {{ user['username'] }}? This will also delete all their picks.');">
+                            <input type="hidden" name="action" value="delete_user">
+                            <input type="hidden" name="user_id" value="{{ user['id'] }}">
+                            <button type="submit" class="btn btn-small btn-danger">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
+    ''', users=users)
+
+@app.route('/admin/export')
+def admin_export():
+    if session.get('username') != 'admin':
+        return redirect(url_for('login'))
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # Get all tables
+    tables = ['users', 'picks', 'results']
+    
+    # Create ZIP in memory
+    zip_buffer = BytesIO()
+    with ZipFile(zip_buffer, 'w') as zip_file:
+        for table in tables:
+            c.execute(f'SELECT * FROM {table}')
+            rows = c.fetchall()
+            csv_buffer = StringIO()
+            csv_writer = csv.writer(csv_buffer)
+            # Write headers
+            csv_writer.writerow(rows[0].keys() if rows else [])
+            # Write data
+            for row in rows:
+                csv_writer.writerow(row.values())
+            zip_file.writestr(f'{table}.csv', csv_buffer.getvalue())
+    
+    conn.close()
+    
+    zip_buffer.seek(0)
+    return send_file(zip_buffer, as_attachment=True, download_name='fantasy_league_export.zip', mimetype='application/zip')
+
+@app.route('/rules')
+def rules():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>📋 Tipping Comp Rules</h1>
+        
+        <div class="card">
+            <h3 style="margin-top: 0;">🏍️ How to Play</h3>
+            <ul style="line-height: 1.8; margin-left: 20px;">
+                <li>Pick <strong>ONE rider from 450</strong> and <strong>ONE from 250</strong> each round</li>
+                <li>You must pick riders from both classes</li>
+                <li>Picks lock at <strong>midnight the night before each race</strong></li>
+            </ul>
+        </div>
+        
+        <div class="card">
+            <h3 style="margin-top: 0;">⏰ Missed Picks?</h3>
+            <ul style="line-height: 1.8; margin-left: 20px;">
+                <li>If you forget to pick, <strong>random riders will be auto-assigned</strong></li>
+                <li>Random picks are shown in <span class="random-pick">red</span> on the leaderboard</li>
+            </ul>
+        </div>
+        
+        <div class="card">
+            <h3 style="margin-top: 0;">🔄 Repeat Rule</h3>
+            <ul style="line-height: 1.8; margin-left: 20px;">
+                <li>You cannot pick the same rider (in the same class) within any 3-round window</li>
+                <li>This keeps strategy interesting throughout the season!</li>
+            </ul>
+        </div>
+        
+        <div class="card">
+            <h3 style="margin-top: 0;">🏆 Scoring</h3>
+            <table style="margin: 15px 0; box-shadow: none; border: none;">
+                <tr><td style="border: none;"><strong>1st Place:</strong></td><td style="border: none;">25 points</td></tr>
+                <tr><td style="border: none;"><strong>2nd Place:</strong></td><td style="border: none;">22 points</td></tr>
+                <tr><td style="border: none;"><strong>3rd Place:</strong></td><td style="border: none;">20 points</td></tr>
+                <tr><td style="border: none;"><strong>4th Place:</strong></td><td style="border: none;">18 points</td></tr>
+                <tr><td style="border: none;"><strong>5th Place:</strong></td><td style="border: none;">16 points</td></tr>
+                <tr><td style="border: none;"><strong>6th-22nd:</strong></td><td style="border: none;">15 down to 1 point</td></tr>
+                <tr><td style="border: none;"><strong>23rd+:</strong></td><td style="border: none;">0 points</td></tr>
+            </table>
+            <p style="margin-top: 15px;"><strong>Round Score</strong> = 450 pick points + 250 pick points</p>
+            <p><strong>Season Winner</strong> = Player with highest total points!</p>
+        </div>
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
+    ''')
+
+@app.route('/leaderboard')
+def leaderboard():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT id, username FROM users ORDER BY username')
+    users = c.fetchall()
+    
+    completed_rounds = []
+    for r in range(1, len(SCHEDULE)+1):
+        c.execute('SELECT COUNT(*) as count FROM results WHERE round_num = %s', (r,))
+        if c.fetchone()['count'] > 0:
+            completed_rounds.append(r)
+    
+    player_data = []
+    for user in users:
+        user_id = user['id']
+        username = user['username']
+        total = 0
+        round_picks = {}
+        
+        for rnd in completed_rounds:
+            picks = {'450': ('—', False), '250': ('—', False)}
+            for cls in ['450', '250']:
+                c.execute('SELECT rider, auto_random FROM picks WHERE user_id = %s AND round_num = %s AND class = %s',
+                          (user_id, rnd, cls))
+                row = c.fetchone()
+                if row:
+                    initials = get_initials(row['rider'])
+                    picks[cls] = (initials, bool(row['auto_random']))
+                    c.execute('SELECT position FROM results WHERE round_num = %s AND class = %s AND rider = %s', 
+                              (rnd, cls, row['rider']))
+                    pos = c.fetchone()
+                    if pos:
+                        total += get_points(pos['position'])
+            round_picks[rnd] = picks
+        
+        player_data.append({
+            'username': username,
+            'total': total,
+            'round_picks': round_picks
+        })
+    
+    player_data.sort(key=lambda x: x['total'], reverse=True)
+    
+    conn.close()
+    
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🏆 Season Leaderboard</h1>
+        
+        <div style="overflow-x: auto;">
+            <table>
+                <thead>
+                    <tr>
+                        <th style="text-align: center;">Rank</th>
+                        <th>Player</th>
+                        <th style="text-align: center;">Total Points</th>
+                        {% for rnd in completed_rounds %}
+                        <th style="text-align: center;">R{{ rnd }} {{ get_round_location(rnd) }}<br><small>450 | 250</small></th>
+                        {% endfor %}
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for i in range(player_data|length) %}
+                    {% set player = player_data[i] %}
+                    <tr {% if player.username == session.username %}style="background: #3d3d3d; font-weight: 600; border-left: 3px solid #c9975b;"{% endif %}>
+                        <td style="text-align: center; font-size: 1.3em; font-weight: bold;">
+                            {% if i == 0 %}🥇
+                            {% elif i == 1 %}🥈
+                            {% elif i == 2 %}🥉
+                            {% else %}{{ i+1 }}
+                            {% endif %}
+                        </td>
+                        <td style="font-weight: 600;">{{ player.username }}</td>
+                        <td style="text-align: center; font-size: 1.4em; font-weight: bold; color: #c9975b;">
+                            {{ player.total }}
+                        </td>
+                        {% for rnd in completed_rounds %}
+                        <td style="text-align: center; font-size: 0.9em;">
+                            <span {% if player.round_picks[rnd]['450'][1] %}class="random-pick"{% endif %}>
+                                {{ player.round_picks[rnd]['450'][0] }}
+                            </span>
+                            |
+                            <span {% if player.round_picks[rnd]['250'][1] %}class="random-pick"{% endif %}>
+                                {{ player.round_picks[rnd]['250'][0] }}
+                            </span>
+                        </td>
+                        {% endfor %}
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <p style="margin-top: 20px; color: #b0b0b0; font-size: 0.9em;">
+            <span class="random-pick">Red text</span> = random auto-pick (missed deadline)
+        </p>
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
+    ''', player_data=player_data, completed_rounds=completed_rounds, session=session, get_round_location=get_round_location)
+
+@app.route('/logout')
+def logout():
+    session.clear()
+    return redirect(url_for('login'))
+
+if __name__ == '__main__':
+    app.run(debug=True)
