@@ -12,7 +12,7 @@ from io import StringIO, BytesIO
 from zipfile import ZipFile
 
 app = Flask(__name__)
-app.secret_key = 'change_this_to_a_long_random_string_right_now!'  # CHANGE THIS ON RENDER!
+app.secret_key = 'SLRACING_25102024_Finke'  # CHANGE THIS ON RENDER!
 
 # PostgreSQL connection
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -28,19 +28,29 @@ SCHEDULE = [
     {'round': 7, 'date': '2026-02-21', 'location': 'Arlington, TX'},
     {'round': 8, 'date': '2026-02-28', 'location': 'Daytona Beach, FL'},
     {'round': 9, 'date': '2026-03-07', 'location': 'Indianapolis, IN'},
+    {'round': 10, 'date': '2026-03-21', 'location': 'Birmingham, AL'},
+    {'round': 11, 'date': '2026-03-28', 'location': 'Detroit, MI'},
+    {'round': 12, 'date': '2026-04-04', 'location': 'St.Louis, MO'},
+    {'round': 13, 'date': '2026-04-11', 'location': 'Nashville, TN'},
+    {'round': 14, 'date': '2026-04-18', 'location': 'Cleveland, OH'},
+    {'round': 15, 'date': '2026-04-25', 'location': 'Philadelphia, PA'},
+    {'round': 16, 'date': '2026-05-02', 'location': 'Denver, CO'},
+    {'round': 17, 'date': '2026-05-09', 'location': 'Salt Lake City, UT'},
     # Add future rounds here as dates are announced
 ]
 
 RIDERS_450 = [
     'Chase Sexton', 'Cooper Webb', 'Eli Tomac', 'Hunter Lawrence', 'Jett Lawrence',
     'Ken Roczen', 'Jason Anderson', 'Aaron Plessinger', 'Malcolm Stewart', 'Dylan Ferrandis',
-    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig'
+    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig', 'Joey Savatgy',
+    'Christian Craig', 'Justin Cooper', 'Austin Forkner'  
 ]
 
 RIDERS_250 = [
     'Haiden Deegan', 'Levi Kitchen', 'Chance Hymas', 'Ryder DiFrancesco', 'Max Anstie',
     'Cameron McAdoo', 'Nate Thrasher', 'Jalek Swoll', 'Casey Cochran', 'Daxton Bennick',
-    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle'
+    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle', 'Max Vohland', 'Michael Mosiman', 
+    'Parker Ross', 'Carson Mumford' 
 ]
 
 def get_db_connection():
@@ -85,10 +95,32 @@ def get_deadline_for_round(round_num):
     sched = next((s for s in SCHEDULE if s['round'] == round_num), None)
     if not sched:
         return None
+    
+    # Parse the race date
     race_date = datetime.strptime(sched['date'], '%Y-%m-%d')
-    deadline = race_date - timedelta(days=1)
-    deadline = deadline.replace(hour=23, minute=59, second=59)
-    return deadline
+    
+    # Determine the timezone based on location
+    location = sched['location']
+    if 'CA' in location or 'Seattle' in location:  # West Coast
+        tz_offset = -8  # PST
+    elif 'TX' in location or 'IN' in location:  # Central
+        tz_offset = -6  # CST
+    elif 'FL' in location:  # East Coast
+        tz_offset = -5  # EST
+    elif 'AZ' in location:  # Arizona
+        tz_offset = -7  # MST (Arizona doesn't do DST)
+    else:
+        tz_offset = -8  # Default to PST
+    
+    # Set deadline to midnight (00:00) on race day in the race's local timezone
+    # This is effectively 11:59:59 PM the night before
+    deadline_local = race_date.replace(hour=0, minute=0, second=0)
+    
+    # Convert to UTC by subtracting the timezone offset
+    from datetime import timezone as tz, timedelta
+    deadline_utc = deadline_local.replace(tzinfo=tz(timedelta(hours=tz_offset)))
+    
+    return deadline_utc
 
 def normalize_rider(name):
     return ' '.join(word.capitalize() for word in name.strip().lower().split())
@@ -525,7 +557,10 @@ def pick(round_num):
         return redirect(url_for('dashboard'))
     
     deadline = get_deadline_for_round(round_num)
-    deadline_passed = datetime.now() > deadline
+    if deadline:
+        deadline_passed = datetime.now(deadline.tzinfo) > deadline
+    else:
+        deadline_passed = False
     
     conn = get_db_connection()
     c = conn.cursor()
@@ -600,7 +635,12 @@ def pick(round_num):
     
     message = ""
     if deadline_passed:
-        message = f"Picks locked (deadline was midnight { (deadline - timedelta(days=1)).strftime('%B %d') })."
+        if deadline:
+            # Convert deadline to race local time for display
+            deadline_display = deadline.astimezone()
+            message = f"Picks locked (deadline was midnight USA race time on {deadline_display.strftime('%B %d')})."
+        else:
+            message = "Picks locked."
         if any(existing_picks.get(cls, (None, 0))[1] for cls in ['450', '250']):
             message += " <strong style='color:#e74c3c;'>Random picks applied.</strong>"
     
@@ -628,7 +668,7 @@ def pick(round_num):
         
         {% if not deadline_passed and deadline_iso %}
         <div class="countdown-timer">
-            <h3>⏰ Picks Lock In:</h3>
+            <h3>⏰ Picks Lock at Midnight USA Race Time:</h3>
             <div class="countdown-display" id="countdown">
                 <div class="countdown-unit">
                     <span class="countdown-number" id="days">--</span>
@@ -647,13 +687,27 @@ def pick(round_num):
                     <span class="countdown-label">Seconds</span>
                 </div>
             </div>
+            <p style="margin-top: 15px; color: #b0b0b0; font-size: 0.9em;">
+                Deadline: <span id="deadline-display"></span>
+            </p>
         </div>
         <script>
-            const deadline = new Date("{{ deadline_iso }}");
+            const deadlineUTC = new Date("{{ deadline_iso }}");
+            
+            // Display deadline in user's local time
+            document.getElementById('deadline-display').textContent = deadlineUTC.toLocaleString('en-AU', {
+                weekday: 'short',
+                year: 'numeric',
+                month: 'short',
+                day: 'numeric',
+                hour: '2-digit',
+                minute: '2-digit',
+                timeZoneName: 'short'
+            });
             
             function updateCountdown() {
                 const now = new Date();
-                const diff = deadline - now;
+                const diff = deadlineUTC - now;
                 
                 if (diff <= 0) {
                     document.getElementById('countdown').innerHTML = '<p class="countdown-expired">Picks are now locked!</p>';
