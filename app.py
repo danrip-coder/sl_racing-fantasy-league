@@ -12,7 +12,7 @@ from io import StringIO, BytesIO
 from zipfile import ZipFile
 
 app = Flask(__name__)
-app.secret_key = 'SLRACING_25102024_Finke'  # CHANGE THIS ON RENDER!
+app.secret_key = 'change_this_to_a_long_random_string_right_now!'  # CHANGE THIS ON RENDER!
 
 # PostgreSQL connection
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -28,29 +28,19 @@ SCHEDULE = [
     {'round': 7, 'date': '2026-02-21', 'location': 'Arlington, TX'},
     {'round': 8, 'date': '2026-02-28', 'location': 'Daytona Beach, FL'},
     {'round': 9, 'date': '2026-03-07', 'location': 'Indianapolis, IN'},
-    {'round': 10, 'date': '2026-03-21', 'location': 'Birmingham, AL'},
-    {'round': 11, 'date': '2026-03-28', 'location': 'Detroit, MI'},
-    {'round': 12, 'date': '2026-04-04', 'location': 'St.Louis, MO'},
-    {'round': 13, 'date': '2026-04-11', 'location': 'Nashville, TN'},
-    {'round': 14, 'date': '2026-04-18', 'location': 'Cleveland, OH'},
-    {'round': 15, 'date': '2026-04-25', 'location': 'Philadelphia, PA'},
-    {'round': 16, 'date': '2026-05-02', 'location': 'Denver, CO'},
-    {'round': 17, 'date': '2026-05-09', 'location': 'Salt Lake City, UT'},
     # Add future rounds here as dates are announced
 ]
 
 RIDERS_450 = [
     'Chase Sexton', 'Cooper Webb', 'Eli Tomac', 'Hunter Lawrence', 'Jett Lawrence',
     'Ken Roczen', 'Jason Anderson', 'Aaron Plessinger', 'Malcolm Stewart', 'Dylan Ferrandis',
-    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig', 'Joey Savatgy',
-    'Christian Craig', 'Justin Cooper', 'Austin Forkner'  
+    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig'
 ]
 
 RIDERS_250 = [
     'Haiden Deegan', 'Levi Kitchen', 'Chance Hymas', 'Ryder DiFrancesco', 'Max Anstie',
     'Cameron McAdoo', 'Nate Thrasher', 'Jalek Swoll', 'Casey Cochran', 'Daxton Bennick',
-    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle', 'Max Vohland', 'Michael Mosiman', 
-    'Parker Ross', 'Carson Mumford' 
+    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle'
 ]
 
 SECURITY_QUESTIONS = [
@@ -68,21 +58,29 @@ def init_db():
     conn = get_db_connection()
     c = conn.cursor()
     
-    # Create tables
+    # Create tables if they don't exist
     c.execute('''CREATE TABLE IF NOT EXISTS users 
-                 (id SERIAL PRIMARY KEY, username TEXT UNIQUE, password TEXT, email TEXT UNIQUE, 
-                  security_question TEXT, security_answer TEXT)''')
+                 (id SERIAL PRIMARY KEY, username TEXT UNIQUE, password TEXT, email TEXT UNIQUE)''')
     c.execute('''CREATE TABLE IF NOT EXISTS picks 
                  (id SERIAL PRIMARY KEY, user_id INTEGER, round_num INTEGER, class TEXT, rider TEXT, auto_random INTEGER DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS results 
                  (id SERIAL PRIMARY KEY, round_num INTEGER, class TEXT, rider TEXT, position INTEGER)''')
     
-    # Add columns to existing users table if they don't exist
+    # Add security question columns if they don't exist (for existing databases)
     try:
-        c.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS security_question TEXT')
-        c.execute('ALTER TABLE users ADD COLUMN IF NOT EXISTS security_answer TEXT')
-    except:
-        pass  # Columns might already exist
+        # Check if columns exist first
+        c.execute("""
+            SELECT column_name 
+            FROM information_schema.columns 
+            WHERE table_name='users' AND column_name='security_question'
+        """)
+        if not c.fetchone():
+            c.execute('ALTER TABLE users ADD COLUMN security_question TEXT')
+            c.execute('ALTER TABLE users ADD COLUMN security_answer TEXT')
+            conn.commit()
+    except Exception as e:
+        print(f"Column migration note: {e}")
+        conn.rollback()
     
     conn.commit()
     conn.close()
