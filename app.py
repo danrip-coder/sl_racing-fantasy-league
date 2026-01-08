@@ -12,7 +12,7 @@ from io import StringIO, BytesIO
 from zipfile import ZipFile
 
 app = Flask(__name__)
-app.secret_key = 'change_this_to_a_long_random_string_right_now!'  # CHANGE THIS ON RENDER!
+app.secret_key = 'SLRACING_25102024_Finke'  # CHANGE THIS ON RENDER!
 
 # PostgreSQL connection
 DATABASE_URL = os.environ.get('DATABASE_URL')
