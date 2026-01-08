@@ -52,46 +52,18 @@ RIDERS_250 = [
     'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle', 'Max Vohland', 'Michael Mosiman', 
     'Parker Ross', 'Carson Mumford' 
 ]
-
-SECURITY_QUESTIONS = [
-    "What is your favorite color?",
-    "What is your favorite rider?",
-    "What city were you born in?",
-    "What is your mother's maiden name?",
-    "What was the name of your first pet?"
-]
-
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
-    
-    # Create tables if they don't exist
     c.execute('''CREATE TABLE IF NOT EXISTS users 
                  (id SERIAL PRIMARY KEY, username TEXT UNIQUE, password TEXT, email TEXT UNIQUE)''')
     c.execute('''CREATE TABLE IF NOT EXISTS picks 
                  (id SERIAL PRIMARY KEY, user_id INTEGER, round_num INTEGER, class TEXT, rider TEXT, auto_random INTEGER DEFAULT 0)''')
     c.execute('''CREATE TABLE IF NOT EXISTS results 
                  (id SERIAL PRIMARY KEY, round_num INTEGER, class TEXT, rider TEXT, position INTEGER)''')
-    
-    # Add security question columns if they don't exist (for existing databases)
-    try:
-        # Check if columns exist first
-        c.execute("""
-            SELECT column_name 
-            FROM information_schema.columns 
-            WHERE table_name='users' AND column_name='security_question'
-        """)
-        if not c.fetchone():
-            c.execute('ALTER TABLE users ADD COLUMN security_question TEXT')
-            c.execute('ALTER TABLE users ADD COLUMN security_answer TEXT')
-            conn.commit()
-    except Exception as e:
-        print(f"Column migration note: {e}")
-        conn.rollback()
-    
     conn.commit()
     conn.close()
 
@@ -465,9 +437,8 @@ def login():
             </form>
             <p style="margin-top: 20px;">
                 <a href="/register" class="link">New here? Register now!</a>
-            </p>
-            <p style="margin-top: 10px;">
-                <a href="/forgot_password" class="link">Forgot your password?</a>
+                <br>
+                <a href="/forgot-password" class="link">Forgot your password?</a>
             </p>
         </div>
     </div>
@@ -479,58 +450,10 @@ def register():
         username = request.form['username']
         email = request.form['email']
         password = generate_password_hash(request.form['password'])
-        security_question = request.form.get('security_question')
-        security_answer = request.form.get('security_answer', '').lower().strip()
-        
-        if not security_question or not security_answer:
-            flash('Please select a security question and provide an answer')
-            return render_template_string(get_base_style() + '''
-                <div class="container">
-                    <h1>🏍️ Register for SL Racing SMX Tipping Comp</h1>
-                    <div class="card">
-                        {% with messages = get_flashed_messages() %}
-                            {% if messages %}
-                                {% for message in messages %}
-                                    <div class="flash">{{ message }}</div>
-                                {% endfor %}
-                            {% endif %}
-                        {% endwith %}
-                        <form method="post">
-                            <label><strong>Username</strong></label>
-                            <input type="text" name="username" required>
-                            
-                            <label><strong>Email</strong></label>
-                            <input type="email" name="email" required>
-                            
-                            <label><strong>Password</strong></label>
-                            <input type="password" name="password" required>
-                            
-                            <label><strong>Security Question (for password recovery)</strong></label>
-                            <select name="security_question" required>
-                                <option value="">-- Select a question --</option>
-                                {% for q in questions %}
-                                <option value="{{ q }}">{{ q }}</option>
-                                {% endfor %}
-                            </select>
-                            
-                            <label><strong>Security Answer</strong></label>
-                            <input type="text" name="security_answer" required placeholder="Enter your answer">
-                            <p style="font-size: 0.9em; color: #b0b0b0; margin-top: 5px;">This will be used to reset your password if you forget it.</p>
-                            
-                            <button type="submit" class="btn">Register</button>
-                        </form>
-                        <p style="margin-top: 20px;">
-                            <a href="/" class="link">← Back to Login</a>
-                        </p>
-                    </div>
-                </div>
-            ''', questions=SECURITY_QUESTIONS)
-        
         conn = get_db_connection()
         c = conn.cursor()
         try:
-            c.execute('INSERT INTO users (username, password, email, security_question, security_answer) VALUES (%s, %s, %s, %s, %s)', 
-                     (username, password, email, security_question, security_answer))
+            c.execute('INSERT INTO users (username, password, email) VALUES (%s, %s, %s)', (username, password, email))
             conn.commit()
             flash('Registered! You can now login.')
             conn.close()
@@ -538,7 +461,6 @@ def register():
         except psycopg2.IntegrityError:
             flash('Username or email already taken')
             conn.close()
-    
     return render_template_string(get_base_style() + '''
     <div class="container">
         <h1>🏍️ Register for SL Racing SMX Tipping Comp</h1>
@@ -560,18 +482,6 @@ def register():
                 <label><strong>Password</strong></label>
                 <input type="password" name="password" required>
                 
-                <label><strong>Security Question (for password recovery)</strong></label>
-                <select name="security_question" required>
-                    <option value="">-- Select a question --</option>
-                    {% for q in questions %}
-                    <option value="{{ q }}">{{ q }}</option>
-                    {% endfor %}
-                </select>
-                
-                <label><strong>Security Answer</strong></label>
-                <input type="text" name="security_answer" required placeholder="Enter your answer">
-                <p style="font-size: 0.9em; color: #b0b0b0; margin-top: 5px;">This will be used to reset your password if you forget it.</p>
-                
                 <button type="submit" class="btn">Register</button>
             </form>
             <p style="margin-top: 20px;">
@@ -579,179 +489,9 @@ def register():
             </p>
         </div>
     </div>
-    ''', questions=SECURITY_QUESTIONS)
-
-@app.route('/set_security_question', methods=['GET', 'POST'])
-def set_security_question():
-    if 'user_id' not in session:
-        return redirect(url_for('login'))
-    
-    if request.method == 'POST':
-        security_question = request.form.get('security_question')
-        security_answer = request.form.get('security_answer', '').lower().strip()
-        current_password = request.form.get('current_password')
-        
-        if not security_question or not security_answer:
-            flash('Please select a question and provide an answer')
-        else:
-            conn = get_db_connection()
-            c = conn.cursor()
-            
-            # Verify current password
-            c.execute('SELECT password FROM users WHERE id = %s', (session['user_id'],))
-            user = c.fetchone()
-            
-            if user and check_password_hash(user['password'], current_password):
-                c.execute('UPDATE users SET security_question = %s, security_answer = %s WHERE id = %s',
-                         (security_question, security_answer, session['user_id']))
-                conn.commit()
-                conn.close()
-                flash('Security question set successfully!')
-                return redirect(url_for('dashboard'))
-            else:
-                conn.close()
-                flash('Incorrect password')
-    
-    return render_template_string(get_base_style() + '''
-    <div class="container">
-        <h1>🔐 Set Security Question</h1>
-        <div class="card">
-            {% with messages = get_flashed_messages() %}
-                {% if messages %}
-                    {% for message in messages %}
-                        <div class="flash">{{ message }}</div>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
-            <p style="margin-bottom: 20px; color: #b0b0b0;">
-                This security question will be used to recover your password if you forget it.
-            </p>
-            <form method="post">
-                <label><strong>Current Password</strong></label>
-                <input type="password" name="current_password" required>
-                <p style="font-size: 0.9em; color: #b0b0b0; margin-top: 5px;">Verify your identity</p>
-                
-                <label style="margin-top: 20px;"><strong>Security Question</strong></label>
-                <select name="security_question" required>
-                    <option value="">-- Select a question --</option>
-                    {% for q in questions %}
-                    <option value="{{ q }}">{{ q }}</option>
-                    {% endfor %}
-                </select>
-                
-                <label><strong>Security Answer</strong></label>
-                <input type="text" name="security_answer" required placeholder="Enter your answer">
-                <p style="font-size: 0.9em; color: #b0b0b0; margin-top: 5px;">
-                    Remember this answer - you'll need it to reset your password!
-                </p>
-                
-                <button type="submit" class="btn">Save Security Question</button>
-            </form>
-            <p style="margin-top: 20px;">
-                <a href="/dashboard" class="link">← Back to Dashboard</a>
-            </p>
-        </div>
-    </div>
-    ''', questions=SECURITY_QUESTIONS)
-
-@app.route('/forgot_password', methods=['GET', 'POST'])
-def forgot_password():
-    if request.method == 'POST':
-        step = request.form.get('step', '1')
-        
-        if step == '1':
-            # Step 1: Verify username and show security question
-            username = request.form.get('username')
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute('SELECT security_question FROM users WHERE username = %s', (username,))
-            user = c.fetchone()
-            conn.close()
-            
-            if user and user['security_question']:
-                return render_template_string(get_base_style() + '''
-                <div class="container">
-                    <h1>🔑 Reset Password</h1>
-                    <div class="card">
-                        <h3 style="margin-top: 0;">Security Question</h3>
-                        <p style="margin-bottom: 20px;">Answer the following question to reset your password:</p>
-                        <form method="post">
-                            <input type="hidden" name="step" value="2">
-                            <input type="hidden" name="username" value="{{ username }}">
-                            
-                            <label><strong>{{ question }}</strong></label>
-                            <input type="text" name="security_answer" required placeholder="Your answer" autofocus>
-                            
-                            <label style="margin-top: 20px;"><strong>New Password</strong></label>
-                            <input type="password" name="new_password" required placeholder="Enter new password">
-                            
-                            <label><strong>Confirm New Password</strong></label>
-                            <input type="password" name="confirm_password" required placeholder="Confirm new password">
-                            
-                            <button type="submit" class="btn">Reset Password</button>
-                        </form>
-                        <p style="margin-top: 20px;">
-                            <a href="/" class="link">← Back to Login</a>
-                        </p>
-                    </div>
-                </div>
-                ''', username=username, question=user['security_question'])
-            else:
-                flash('Username not found or no security question set')
-        
-        elif step == '2':
-            # Step 2: Verify answer and reset password
-            username = request.form.get('username')
-            security_answer = request.form.get('security_answer', '').lower().strip()
-            new_password = request.form.get('new_password')
-            confirm_password = request.form.get('confirm_password')
-            
-            if new_password != confirm_password:
-                flash('Passwords do not match')
-                return redirect(url_for('forgot_password'))
-            
-            conn = get_db_connection()
-            c = conn.cursor()
-            c.execute('SELECT security_answer FROM users WHERE username = %s', (username,))
-            user = c.fetchone()
-            
-            if user and user['security_answer'] == security_answer:
-                # Answer is correct, update password
-                new_pass_hash = generate_password_hash(new_password)
-                c.execute('UPDATE users SET password = %s WHERE username = %s', (new_pass_hash, username))
-                conn.commit()
-                conn.close()
-                flash('Password reset successfully! You can now login.')
-                return redirect(url_for('login'))
-            else:
-                conn.close()
-                flash('Incorrect answer to security question')
-    
-    return render_template_string(get_base_style() + '''
-    <div class="container">
-        <h1>🔑 Reset Password</h1>
-        <div class="card">
-            {% with messages = get_flashed_messages() %}
-                {% if messages %}
-                    {% for message in messages %}
-                        <div class="flash" style="background: #e74c3c;">{{ message }}</div>
-                    {% endfor %}
-                {% endif %}
-            {% endwith %}
-            <h3 style="margin-top: 0;">Enter Your Username</h3>
-            <form method="post">
-                <input type="hidden" name="step" value="1">
-                <label><strong>Username</strong></label>
-                <input type="text" name="username" required autofocus>
-                
-                <button type="submit" class="btn">Continue</button>
-            </form>
-            <p style="margin-top: 20px;">
-                <a href="/" class="link">← Back to Login</a>
-            </p>
-        </div>
-    </div>
     ''')
+
+@app.route('/dashboard')
 def dashboard():
     if 'user_id' not in session:
         return redirect(url_for('login'))
@@ -802,6 +542,7 @@ def dashboard():
         {% endif %}
         
         <div style="margin-top: 40px;">
+            <a href="/change-password" class="link">Change Password</a> | 
             <a href="/logout" class="link">Logout</a>
         </div>
     </div>
@@ -1162,7 +903,130 @@ def admin(round_num):
     </div>
     ''', round_num=round_num, RIDERS_450=RIDERS_450, RIDERS_250=RIDERS_250, location=location)
 
-@app.route('/admin/users', methods=['GET', 'POST'])
+@app.route('/forgot-password', methods=['GET', 'POST'])
+def forgot_password():
+    if request.method == 'POST':
+        username = request.form['username']
+        email = request.form['email']
+        new_password = request.form['new_password']
+        confirm_password = request.form['confirm_password']
+        
+        if new_password != confirm_password:
+            flash('Passwords do not match')
+            return redirect(url_for('forgot_password'))
+        
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('SELECT * FROM users WHERE username = %s AND email = %s', (username, email))
+        user = c.fetchone()
+        
+        if user:
+            hashed = generate_password_hash(new_password)
+            c.execute('UPDATE users SET password = %s WHERE id = %s', (hashed, user['id']))
+            conn.commit()
+            conn.close()
+            flash('Password reset successful! You can now login with your new password.')
+            return redirect(url_for('login'))
+        else:
+            conn.close()
+            flash('Username and email combination not found. Please contact admin for help.')
+    
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🔑 Reset Password</h1>
+        <div class="card">
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    {% for message in messages %}
+                        <div class="flash">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <p style="color: #b0b0b0; margin-bottom: 20px;">
+                Enter your username and email address to reset your password.
+                If you don't remember your email, contact the admin.
+            </p>
+            <form method="post">
+                <label><strong>Username</strong></label>
+                <input type="text" name="username" required>
+                
+                <label><strong>Email Address</strong></label>
+                <input type="email" name="email" required>
+                
+                <label><strong>New Password</strong></label>
+                <input type="password" name="new_password" required minlength="6">
+                
+                <label><strong>Confirm New Password</strong></label>
+                <input type="password" name="confirm_password" required minlength="6">
+                
+                <button type="submit" class="btn">Reset Password</button>
+            </form>
+            <p style="margin-top: 20px;">
+                <a href="/" class="link">← Back to Login</a>
+            </p>
+        </div>
+    </div>
+    ''')
+
+@app.route('/change-password', methods=['GET', 'POST'])
+def change_password():
+    if 'user_id' not in session:
+        return redirect(url_for('login'))
+    
+    if request.method == 'POST':
+        current_password = request.form['current_password']
+        new_password = request.form['new_password']
+        confirm_password = request.form['confirm_password']
+        
+        if new_password != confirm_password:
+            flash('New passwords do not match')
+            return redirect(url_for('change_password'))
+        
+        conn = get_db_connection()
+        c = conn.cursor()
+        c.execute('SELECT * FROM users WHERE id = %s', (session['user_id'],))
+        user = c.fetchone()
+        
+        if user and check_password_hash(user['password'], current_password):
+            hashed = generate_password_hash(new_password)
+            c.execute('UPDATE users SET password = %s WHERE id = %s', (hashed, session['user_id']))
+            conn.commit()
+            conn.close()
+            flash('Password changed successfully!')
+            return redirect(url_for('dashboard'))
+        else:
+            conn.close()
+            flash('Current password is incorrect')
+    
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🔑 Change Your Password</h1>
+        <div class="card">
+            {% with messages = get_flashed_messages() %}
+                {% if messages %}
+                    {% for message in messages %}
+                        <div class="flash">{{ message }}</div>
+                    {% endfor %}
+                {% endif %}
+            {% endwith %}
+            <form method="post">
+                <label><strong>Current Password</strong></label>
+                <input type="password" name="current_password" required>
+                
+                <label><strong>New Password</strong></label>
+                <input type="password" name="new_password" required minlength="6">
+                
+                <label><strong>Confirm New Password</strong></label>
+                <input type="password" name="confirm_password" required minlength="6">
+                
+                <button type="submit" class="btn">Change Password</button>
+            </form>
+            <p style="margin-top: 20px;">
+                <a href="/dashboard" class="link">← Back to Dashboard</a>
+            </p>
+        </div>
+    </div>
+    ''')
 def admin_users():
     if session.get('username') != 'admin':
         return redirect(url_for('login'))
@@ -1170,33 +1034,24 @@ def admin_users():
     c = conn.cursor()
     if request.method == 'POST':
         action = request.form.get('action')
-        user_id = request.form.get('user_id')
+        user_id = request.form['user_id']
         
         if action == 'reset_password':
-            new_password = request.form.get('new_password')
-            if new_password:
-                new_pass_hash = generate_password_hash(new_password)
-                c.execute('UPDATE users SET password = %s WHERE id = %s', (new_pass_hash, user_id))
-                conn.commit()
-                flash(f'Password reset successfully for user ID {user_id}!')
-            else:
-                flash('Password cannot be empty!')
+            new_pass = generate_password_hash(request.form['new_password'])
+            c.execute('UPDATE users SET password = %s WHERE id = %s', (new_pass, user_id))
+            conn.commit()
+            flash('Password reset successfully!')
         elif action == 'delete_user':
             # Prevent admin from deleting themselves
             if int(user_id) == session.get('user_id'):
                 flash('Cannot delete your own admin account!')
             else:
-                # Get username before deleting
-                c.execute('SELECT username FROM users WHERE id = %s', (user_id,))
-                user = c.fetchone()
-                username = user['username'] if user else 'Unknown'
-                
                 # Delete user's picks first (foreign key constraint)
                 c.execute('DELETE FROM picks WHERE user_id = %s', (user_id,))
                 # Delete the user
                 c.execute('DELETE FROM users WHERE id = %s', (user_id,))
                 conn.commit()
-                flash(f'User "{username}" deleted successfully!')
+                flash('User deleted successfully!')
     
     c.execute('SELECT id, username, email FROM users ORDER BY username')
     users = c.fetchall()
@@ -1234,7 +1089,7 @@ def admin_users():
                             <input type="hidden" name="action" value="reset_password">
                             <input type="hidden" name="user_id" value="{{ user['id'] }}">
                             <input type="password" name="new_password" placeholder="New password" required 
-                                   style="width: 150px; margin: 0; padding: 8px;">
+                                   style="width: 150px; margin: 0;">
                             <button type="submit" class="btn btn-small">Reset</button>
                         </form>
                     </td>
