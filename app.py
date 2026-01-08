@@ -12,7 +12,7 @@ from io import StringIO, BytesIO
 from zipfile import ZipFile
 
 app = Flask(__name__)
-app.secret_key = 'SLRACING_25102024_Finke'  # CHANGE THIS ON RENDER!
+app.secret_key = 'change_this_to_a_long_random_string_right_now!'  # CHANGE THIS ON RENDER!
 
 # PostgreSQL connection
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -28,30 +28,21 @@ SCHEDULE = [
     {'round': 7, 'date': '2026-02-21', 'location': 'Arlington, TX'},
     {'round': 8, 'date': '2026-02-28', 'location': 'Daytona Beach, FL'},
     {'round': 9, 'date': '2026-03-07', 'location': 'Indianapolis, IN'},
-    {'round': 10, 'date': '2026-03-21', 'location': 'Birmingham, AL'},
-    {'round': 11, 'date': '2026-03-28', 'location': 'Detroit, MI'},
-    {'round': 12, 'date': '2026-04-04', 'location': 'St.Louis, MO'},
-    {'round': 13, 'date': '2026-04-11', 'location': 'Nashville, TN'},
-    {'round': 14, 'date': '2026-04-18', 'location': 'Cleveland, OH'},
-    {'round': 15, 'date': '2026-04-25', 'location': 'Philadelphia, PA'},
-    {'round': 16, 'date': '2026-05-02', 'location': 'Denver, CO'},
-    {'round': 17, 'date': '2026-05-09', 'location': 'Salt Lake City, UT'},
     # Add future rounds here as dates are announced
 ]
 
 RIDERS_450 = [
     'Chase Sexton', 'Cooper Webb', 'Eli Tomac', 'Hunter Lawrence', 'Jett Lawrence',
     'Ken Roczen', 'Jason Anderson', 'Aaron Plessinger', 'Malcolm Stewart', 'Dylan Ferrandis',
-    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig', 'Joey Savatgy',
-    'Christian Craig', 'Justin Cooper', 'Austin Forkner'  
+    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig'
 ]
 
 RIDERS_250 = [
     'Haiden Deegan', 'Levi Kitchen', 'Chance Hymas', 'Ryder DiFrancesco', 'Max Anstie',
     'Cameron McAdoo', 'Nate Thrasher', 'Jalek Swoll', 'Casey Cochran', 'Daxton Bennick',
-    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle', 'Max Vohland', 'Michael Mosiman', 
-    'Parker Ross', 'Carson Mumford' 
+    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle'
 ]
+
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
 
@@ -536,7 +527,7 @@ def dashboard():
         <div style="margin: 20px 0;">
             <a href="/fetch_results/{{ current_round }}" class="btn btn-small">Auto-Fetch Results (R{{ current_round }})</a>
             <a href="/admin/{{ current_round }}" class="btn btn-small">Manual Results Entry</a>
-            <a href="/admin/users" class="btn btn-small">Manage Users</a>
+            <a href="/admin/manage-users" class="btn btn-small">Manage Users</a>
             <a href="/admin/export" class="btn btn-small">Export Database</a>
         </div>
         {% endif %}
@@ -906,13 +897,21 @@ def admin(round_num):
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
     if request.method == 'POST':
-        username = request.form['username']
-        email = request.form['email']
-        new_password = request.form['new_password']
-        confirm_password = request.form['confirm_password']
+        username = request.form.get('username')
+        email = request.form.get('email')
+        new_password = request.form.get('new_password')
+        confirm_password = request.form.get('confirm_password')
+        
+        if not username or not email or not new_password or not confirm_password:
+            flash('All fields are required')
+            return redirect(url_for('forgot_password'))
         
         if new_password != confirm_password:
             flash('Passwords do not match')
+            return redirect(url_for('forgot_password'))
+        
+        if len(new_password) < 6:
+            flash('Password must be at least 6 characters')
             return redirect(url_for('forgot_password'))
         
         conn = get_db_connection()
@@ -930,6 +929,7 @@ def forgot_password():
         else:
             conn.close()
             flash('Username and email combination not found. Please contact admin for help.')
+            return redirect(url_for('forgot_password'))
     
     return render_template_string(get_base_style() + '''
     <div class="container">
@@ -953,7 +953,7 @@ def forgot_password():
                 <label><strong>Email Address</strong></label>
                 <input type="email" name="email" required>
                 
-                <label><strong>New Password</strong></label>
+                <label><strong>New Password (min 6 characters)</strong></label>
                 <input type="password" name="new_password" required minlength="6">
                 
                 <label><strong>Confirm New Password</strong></label>
