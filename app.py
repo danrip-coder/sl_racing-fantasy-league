@@ -12,7 +12,7 @@ from io import StringIO, BytesIO
 from zipfile import ZipFile
 
 app = Flask(__name__)
-app.secret_key = 'change_this_to_a_long_random_string_right_now!'  # CHANGE THIS ON RENDER!
+app.secret_key = 'SLRACING_25102024_Finke'  # CHANGE THIS ON RENDER!
 
 # PostgreSQL connection
 DATABASE_URL = os.environ.get('DATABASE_URL')
@@ -28,19 +28,29 @@ SCHEDULE = [
     {'round': 7, 'date': '2026-02-21', 'location': 'Arlington, TX'},
     {'round': 8, 'date': '2026-02-28', 'location': 'Daytona Beach, FL'},
     {'round': 9, 'date': '2026-03-07', 'location': 'Indianapolis, IN'},
+    {'round': 10, 'date': '2026-03-21', 'location': 'Birmingham, AL'},
+    {'round': 11, 'date': '2026-03-28', 'location': 'Detroit, MI'},
+    {'round': 12, 'date': '2026-04-04', 'location': 'St.Louis, MO'},
+    {'round': 13, 'date': '2026-04-11', 'location': 'Nashville, TN'},
+    {'round': 14, 'date': '2026-04-18', 'location': 'Cleveland, OH'},
+    {'round': 15, 'date': '2026-04-25', 'location': 'Philadelphia, PA'},
+    {'round': 16, 'date': '2026-05-02', 'location': 'Denver, CO'},
+    {'round': 17, 'date': '2026-05-09', 'location': 'Salt Lake City, UT'},
     # Add future rounds here as dates are announced
 ]
 
 RIDERS_450 = [
     'Chase Sexton', 'Cooper Webb', 'Eli Tomac', 'Hunter Lawrence', 'Jett Lawrence',
     'Ken Roczen', 'Jason Anderson', 'Aaron Plessinger', 'Malcolm Stewart', 'Dylan Ferrandis',
-    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig'
+    'Justin Barcia', 'Jorge Prado', 'RJ Hampshire', 'Garrett Marchbanks', 'Christian Craig', 'Joey Savatgy',
+    'Christian Craig', 'Justin Cooper', 'Austin Forkner'  
 ]
 
 RIDERS_250 = [
     'Haiden Deegan', 'Levi Kitchen', 'Chance Hymas', 'Ryder DiFrancesco', 'Max Anstie',
     'Cameron McAdoo', 'Nate Thrasher', 'Jalek Swoll', 'Casey Cochran', 'Daxton Bennick',
-    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle'
+    'Pierce Brown', 'Seth Hammaker', 'Julien Beaumer', 'Tom Vialle', 'Max Vohland', 'Michael Mosiman', 
+    'Parker Ross', 'Carson Mumford' 
 ]
 
 SECURITY_QUESTIONS = [
