@@ -839,6 +839,108 @@ def fetch_results(round_num):
     flash('Results successfully auto-fetched!')
     return redirect(url_for('dashboard'))
 
+@app.route('/admin/manage-users', methods=['GET', 'POST'])
+def admin_manage_users():
+    if session.get('username') != 'admin':
+        return redirect(url_for('login'))
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    if request.method == 'POST':
+        action = request.form.get('action')
+        user_id = request.form.get('user_id')
+        
+        if action == 'reset_password':
+            new_password = request.form.get('new_password')
+            if new_password and len(new_password) >= 6:
+                new_pass_hash = generate_password_hash(new_password)
+                c.execute('UPDATE users SET password = %s WHERE id = %s', (new_pass_hash, user_id))
+                conn.commit()
+                flash('Password reset successfully!')
+            else:
+                flash('Password must be at least 6 characters')
+                
+        elif action == 'delete_user':
+            # Prevent admin from deleting themselves
+            if int(user_id) == session.get('user_id'):
+                flash('Cannot delete your own admin account!')
+            else:
+                # Delete user's picks first (foreign key constraint)
+                c.execute('DELETE FROM picks WHERE user_id = %s', (user_id,))
+                # Delete the user
+                c.execute('DELETE FROM users WHERE id = %s', (user_id,))
+                conn.commit()
+                flash('User deleted successfully!')
+    
+    c.execute('SELECT id, username, email FROM users ORDER BY username')
+    users = c.fetchall()
+    conn.close()
+    
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🔧 Manage Users</h1>
+        
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="flash">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <div class="card" style="margin-bottom: 20px;">
+            <h3 style="margin-top: 0;">Admin Password Reset</h3>
+            <p style="color: #b0b0b0;">
+                Use this section to reset passwords for users who have forgotten their password and cannot reset it themselves.
+                Users can also reset their own passwords from the "Forgot Password" link on the login page.
+            </p>
+        </div>
+        
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Username</th>
+                    <th>Email</th>
+                    <th style="width: 300px;">Reset Password</th>
+                    <th>Delete</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for user in users %}
+                <tr>
+                    <td>{{ user['id'] }}</td>
+                    <td style="font-weight: 600;">{{ user['username'] }}</td>
+                    <td>{{ user['email'] or 'No email' }}</td>
+                    <td>
+                        <form method="post" style="display: flex; gap: 10px; align-items: center; margin: 0;">
+                            <input type="hidden" name="action" value="reset_password">
+                            <input type="hidden" name="user_id" value="{{ user['id'] }}">
+                            <input type="password" name="new_password" placeholder="New password (min 6 chars)" required 
+                                   style="width: 180px; margin: 0; padding: 8px;" minlength="6">
+                            <button type="submit" class="btn btn-small" style="margin: 0;">Reset</button>
+                        </form>
+                    </td>
+                    <td>
+                        <form method="post" style="display:inline; margin: 0;" 
+                              onsubmit="return confirm('Are you sure you want to delete {{ user['username'] }}? This will also delete all their picks.');">
+                            <input type="hidden" name="action" value="delete_user">
+                            <input type="hidden" name="user_id" value="{{ user['id'] }}">
+                            <button type="submit" class="btn btn-small btn-danger" style="margin: 0;">Delete</button>
+                        </form>
+                    </td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
+    ''', users=users)
+
 @app.route('/admin/<int:round_num>', methods=['GET', 'POST'])
 def admin(round_num):
     if session.get('username') != 'admin':
