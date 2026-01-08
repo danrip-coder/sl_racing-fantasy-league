@@ -974,12 +974,20 @@ def change_password():
         return redirect(url_for('login'))
     
     if request.method == 'POST':
-        current_password = request.form['current_password']
-        new_password = request.form['new_password']
-        confirm_password = request.form['confirm_password']
+        current_password = request.form.get('current_password')
+        new_password = request.form.get('new_password')
+        confirm_password = request.form.get('confirm_password')
+        
+        if not current_password or not new_password or not confirm_password:
+            flash('All fields are required')
+            return redirect(url_for('change_password'))
         
         if new_password != confirm_password:
             flash('New passwords do not match')
+            return redirect(url_for('change_password'))
+        
+        if len(new_password) < 6:
+            flash('Password must be at least 6 characters')
             return redirect(url_for('change_password'))
         
         conn = get_db_connection()
@@ -997,6 +1005,7 @@ def change_password():
         else:
             conn.close()
             flash('Current password is incorrect')
+            return redirect(url_for('change_password'))
     
     return render_template_string(get_base_style() + '''
     <div class="container">
@@ -1013,7 +1022,7 @@ def change_password():
                 <label><strong>Current Password</strong></label>
                 <input type="password" name="current_password" required>
                 
-                <label><strong>New Password</strong></label>
+                <label><strong>New Password (min 6 characters)</strong></label>
                 <input type="password" name="new_password" required minlength="6">
                 
                 <label><strong>Confirm New Password</strong></label>
