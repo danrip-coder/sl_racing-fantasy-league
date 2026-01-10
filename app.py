@@ -669,7 +669,9 @@ def pick(round_num):
     deadline = get_deadline_for_round(round_num)
     deadline_passed = False
     if deadline:
-        deadline_passed = datetime.now(deadline.tzinfo) > deadline
+        from datetime import timezone
+        now_utc = datetime.now(timezone.utc)
+        deadline_passed = now_utc > deadline
     riders_450 = get_riders_by_class('450')
     riders_250 = get_available_250_riders(round_num)
     conn = get_db_connection()
