@@ -90,10 +90,12 @@ def get_initials(name):
     return ''.join(p[0].upper() for p in parts if p)
 
 def get_current_round():
-    now = datetime.now()
+    from datetime import timezone
+    now_utc = datetime.now(timezone.utc)
     schedule = get_schedule()
     for s in schedule:
-        if now.date() < s['race_date']:
+        deadline = get_deadline_for_round(s['round'])
+        if deadline and now_utc < deadline:
             return s['round']
     return len(schedule) + 1 if schedule else 1
 
