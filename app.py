@@ -81,8 +81,7 @@ def get_points(position):
     elif position == 2: return 22
     elif position == 3: return 20
     elif position == 4: return 18
-    elif position == 5: return 16
-    elif position <= 22: return 23 - position
+    elif position >= 5 and position <= 20: return 22 - position
     else: return 0
 
 def get_initials(name):
@@ -648,7 +647,7 @@ def dashboard():
         <div style="margin: 20px 0;">
             <a href="/admin/schedule" class="btn btn-small">Manage Schedule</a>
             <a href="/admin/riders" class="btn btn-small">Manage Riders</a>
-            <a href="/admin/{{ current_round }}" class="btn btn-small">Manual Results Entry</a>
+            <a href="/admin/results-selector" class="btn btn-small">Enter Results</a>
             <a href="/admin/manage-users" class="btn btn-small">Manage Users</a>
             <a href="/admin/export" class="btn btn-small">Export Database</a>
         </div>
@@ -1071,9 +1070,9 @@ def rules():
                 <tr><td style="border: none;"><strong>2nd Place:</strong></td><td style="border: none;">22 points</td></tr>
                 <tr><td style="border: none;"><strong>3rd Place:</strong></td><td style="border: none;">20 points</td></tr>
                 <tr><td style="border: none;"><strong>4th Place:</strong></td><td style="border: none;">18 points</td></tr>
-                <tr><td style="border: none;"><strong>5th Place:</strong></td><td style="border: none;">16 points</td></tr>
-                <tr><td style="border: none;"><strong>6th-22nd:</strong></td><td style="border: none;">15 down to 1 point</td></tr>
-                <tr><td style="border: none;"><strong>23rd+:</strong></td><td style="border: none;">0 points</td></tr>
+                <tr><td style="border: none;"><strong>5th Place:</strong></td><td style="border: none;">17 points</td></tr>
+                <tr><td style="border: none;"><strong>6th-20th:</strong></td><td style="border: none;">16 down to 2 points</td></tr>
+                <tr><td style="border: none;"><strong>21st+:</strong></td><td style="border: none;">0 points</td></tr>
             </table>
             <p style="margin-top: 15px;"><strong>Round Score</strong> = 450 pick points + 250 pick points</p>
             <p><strong>Season Winner</strong> = Player with highest total points!</p>
@@ -1325,6 +1324,51 @@ def admin_riders():
         </div>
     </div>
     ''', riders=riders)
+
+@app.route('/admin/results-selector')
+def admin_results_selector():
+    if session.get('username') != 'admin':
+        return redirect(url_for('login'))
+    schedule = get_schedule()
+    return render_template_string(get_base_style() + '''
+    <div class="container">
+        <h1>🔧 Select Round for Results Entry</h1>
+        <div class="card">
+            <h3 style="margin-top: 0;">Choose which round to enter results for:</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Round</th>
+                        <th>Date</th>
+                        <th>Location</th>
+                        <th>Race Type</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in schedule %}
+                    <tr>
+                        <td><strong>{{ s['round'] }}</strong></td>
+                        <td>{{ s['race_date'].strftime('%b %d, %Y') }}</td>
+                        <td>{{ s['location'] }}</td>
+                        <td>
+                            <span class="race-type-badge" style="background: {{ get_race_type_display(s['race_type'])['color'] }}20; color: {{ get_race_type_display(s['race_type'])['color'] }}; border: 1px solid {{ get_race_type_display(s['race_type'])['color'] }};">
+                                {{ get_race_type_display(s['race_type'])['emoji'] }} {{ get_race_type_display(s['race_type'])['name'] }}
+                            </span>
+                        </td>
+                        <td>
+                            <a href="/admin/{{ s['round'] }}" class="btn btn-small">Enter Results</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
+        </div>
+    </div>
+    ''', schedule=schedule, get_race_type_display=get_race_type_display)
 
 @app.route('/admin/<int:round_num>', methods=['GET', 'POST'])
 def admin_results(round_num):
