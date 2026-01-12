@@ -927,19 +927,21 @@ def leaderboard():
         round_picks = {}
         for rnd_info in completed_rounds:
             rnd = rnd_info['round']
-            picks = {'450': ('—', False), '250': ('—', False)}
+            picks = {'450': {'initials': '—', 'random': False, 'points': 0}, '250': {'initials': '—', 'random': False, 'points': 0}}
             for cls in ['450', '250']:
                 c.execute('SELECT rider, auto_random FROM picks WHERE user_id = %s AND round_num = %s AND class = %s',
                           (user_id, rnd, cls))
                 row = c.fetchone()
                 if row:
                     initials = get_initials(row['rider'])
-                    picks[cls] = (initials, bool(row['auto_random']))
                     c.execute('SELECT position FROM results WHERE round_num = %s AND class = %s AND rider = %s', 
                               (rnd, cls, row['rider']))
                     pos = c.fetchone()
+                    points = 0
                     if pos:
-                        total += get_points(pos['position'])
+                        points = get_points(pos['position'])
+                        total += points
+                    picks[cls] = {'initials': initials, 'random': bool(row['auto_random']), 'points': points}
             round_picks[rnd] = picks
         player_data.append({
             'username': username,
@@ -1001,13 +1003,18 @@ def leaderboard():
                         </td>
                         {% for rnd_info in completed_rounds %}
                         <td style="text-align: center; font-size: 0.9em;">
-                            <span {% if player.round_picks[rnd_info['round']]['450'][1] %}class="random-pick"{% endif %}>
-                                {{ player.round_picks[rnd_info['round']]['450'][0] }}
-                            </span>
-                            |
-                            <span {% if player.round_picks[rnd_info['round']]['250'][1] %}class="random-pick"{% endif %}>
-                                {{ player.round_picks[rnd_info['round']]['250'][0] }}
-                            </span>
+                            <div style="margin-bottom: 3px;">
+                                <span {% if player.round_picks[rnd_info['round']]['450']['random'] %}class="random-pick"{% endif %}>
+                                    {{ player.round_picks[rnd_info['round']]['450']['initials'] }}
+                                </span>
+                                |
+                                <span {% if player.round_picks[rnd_info['round']]['250']['random'] %}class="random-pick"{% endif %}>
+                                    {{ player.round_picks[rnd_info['round']]['250']['initials'] }}
+                                </span>
+                            </div>
+                            <div style="font-size: 0.75em; color: #c9975b; font-weight: 600;">
+                                {{ player.round_picks[rnd_info['round']]['450']['points'] }} | {{ player.round_picks[rnd_info['round']]['250']['points'] }}
+                            </div>
                         </td>
                         {% endfor %}
                     </tr>
