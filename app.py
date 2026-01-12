@@ -76,6 +76,53 @@ def get_available_250_riders(round_num):
     else:
         return get_riders_by_class('250_West') + get_riders_by_class('250_East')
 
+def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
+    """Get top 10 riders by championship points for smart auto-pick"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # Get all riders for the class
+    if rider_class == '250':
+        # For 250, get riders available for this round (East/West/Combined)
+        available_riders = get_available_250_riders(round_num)
+    else:
+        available_riders = get_riders_by_class('450')
+    
+    # Calculate total points for each rider from all previous rounds
+    rider_points = {}
+    for rider in available_riders:
+        c.execute('''SELECT SUM(
+                        CASE 
+                            WHEN position = 1 THEN 25
+                            WHEN position = 2 THEN 22
+                            WHEN position = 3 THEN 20
+                            WHEN position = 4 THEN 18
+                            WHEN position >= 5 AND position <= 20 THEN 22 - position
+                            ELSE 0
+                        END
+                     ) as total_points
+                     FROM results 
+                     WHERE rider = %s AND round_num < %s''', (rider, round_num))
+        result = c.fetchone()
+        total_points = result['total_points'] if result['total_points'] else 0
+        rider_points[rider] = total_points
+    
+    conn.close()
+    
+    # Sort by points and get top 10
+    sorted_riders = sorted(rider_points.items(), key=lambda x: x[1], reverse=True)
+    top_riders = [rider for rider, points in sorted_riders[:10]]
+    
+    # Filter out excluded riders (from 3-round rule)
+    if exclude_riders:
+        top_riders = [r for r in top_riders if r not in exclude_riders]
+    
+    # If no top riders available after filtering, return all available riders
+    if not top_riders:
+        top_riders = [r for r in available_riders if r not in (exclude_riders or [])]
+    
+    return top_riders
+
 def get_points(position):
     if position == 1: return 25
     elif position == 2: return 22
