@@ -1106,8 +1106,10 @@ def rules():
         <div class="card">
             <h3 style="margin-top: 0;">⏰ Missed Picks?</h3>
             <ul style="line-height: 1.8; margin-left: 20px;">
-                <li>If you forget to pick, <strong>random riders will be auto-assigned</strong></li>
+                <li>If you forget to pick, <strong>smart auto-picks will be assigned</strong> from the top 10 championship performers</li>
+                <li>Auto-picks respect the 3-round rule (won't pick riders you used recently)</li>
                 <li>Random picks are shown in <span class="random-pick">red</span> on the leaderboard</li>
+                <li><strong>Note:</strong> Admin assigns auto-picks after each deadline - check back after race day</li>
             </ul>
         </div>
         <div class="card">
@@ -1379,16 +1381,99 @@ def admin_riders():
     </div>
     ''', riders=riders)
 
+@app.route('/admin/assign-autopicks/<int:round_num>')
+def admin_assign_autopicks(round_num):
+    if session.get('username') != 'admin':
+        return redirect(url_for('login'))
+    
+    round_info = get_round_info(round_num)
+    if not round_info:
+        flash('Invalid round')
+        return redirect(url_for('dashboard'))
+    
+    # Check if deadline has passed
+    deadline = get_deadline_for_round(round_num)
+    from datetime import timezone
+    now_utc = datetime.now(timezone.utc)
+    
+    if deadline and now_utc <= deadline:
+        flash(f'Deadline for Round {round_num} has not passed yet. Cannot assign auto-picks.')
+        return redirect(url_for('admin_results_selector'))
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # Get all users
+    c.execute('SELECT id, username FROM users')
+    all_users = c.fetchall()
+    
+    riders_450 = get_riders_by_class('450')
+    riders_250 = get_available_250_riders(round_num)
+    
+    assigned_count = 0
+    
+    for user in all_users:
+        user_id = user['id']
+        username = user['username']
+        
+        # Check if user already has picks for this round
+        c.execute('SELECT COUNT(*) as count FROM picks WHERE user_id = %s AND round_num = %s', 
+                  (user_id, round_num))
+        has_picks = c.fetchone()['count'] > 0
+        
+        if not has_picks:
+            # Get riders the user picked in last 2 rounds (3-round rule)
+            c.execute('SELECT rider FROM picks WHERE user_id = %s AND class = %s AND round_num IN (%s, %s)',
+                      (user_id, '450', round_num-1, round_num-2))
+            excluded_450 = [r['rider'] for r in c.fetchall()]
+            
+            c.execute('SELECT rider FROM picks WHERE user_id = %s AND class = %s AND round_num IN (%s, %s)',
+                      (user_id, '250', round_num-1, round_num-2))
+            excluded_250 = [r['rider'] for r in c.fetchall()]
+            
+            # Get top 10 riders by points, excluding recently picked riders
+            top_450 = get_top_riders_by_points('450', round_num, excluded_450)
+            top_250 = get_top_riders_by_points('250', round_num, excluded_250)
+            
+            # Pick randomly from top riders
+            random_450 = random.choice(top_450) if top_450 else None
+            random_250 = random.choice(top_250) if top_250 else None
+            
+            if random_450 and random_250:
+                c.execute('INSERT INTO picks (user_id, round_num, class, rider, auto_random) VALUES (%s, %s, %s, %s, %s)',
+                          (user_id, round_num, '450', random_450, 1))
+                c.execute('INSERT INTO picks (user_id, round_num, class, rider, auto_random) VALUES (%s, %s, %s, %s, %s)',
+                          (user_id, round_num, '250', random_250, 1))
+                assigned_count += 1
+    
+    conn.commit()
+    conn.close()
+    
+    flash(f'Auto-picks assigned to {assigned_count} user(s) who missed Round {round_num} deadline')
+    return redirect(url_for('admin_results_selector'))
+
 @app.route('/admin/results-selector')
 def admin_results_selector():
     if session.get('username') != 'admin':
         return redirect(url_for('login'))
     schedule = get_schedule()
+    
+    # Get current time for checking deadlines
+    from datetime import timezone
+    now_utc = datetime.now(timezone.utc)
+    
     return render_template_string(get_base_style() + '''
     <div class="container">
-        <h1>🔧 Select Round for Results Entry</h1>
+        <h1>🔧 Admin - Rounds Management</h1>
+        {% with messages = get_flashed_messages() %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="flash">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
         <div class="card">
-            <h3 style="margin-top: 0;">Choose which round to enter results for:</h3>
+            <h3 style="margin-top: 0;">Manage rounds - Enter results or assign auto-picks:</h3>
             <table>
                 <thead>
                     <tr>
@@ -1396,11 +1481,14 @@ def admin_results_selector():
                         <th>Date</th>
                         <th>Location</th>
                         <th>Race Type</th>
-                        <th>Action</th>
+                        <th>Status</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for s in schedule %}
+                    {% set deadline = get_deadline_for_round(s['round']) %}
+                    {% set deadline_passed = deadline and now_utc > deadline %}
                     <tr>
                         <td><strong>{{ s['round'] }}</strong></td>
                         <td>{{ s['race_date'].strftime('%b %d, %Y') }}</td>
@@ -1411,7 +1499,21 @@ def admin_results_selector():
                             </span>
                         </td>
                         <td>
+                            {% if deadline_passed %}
+                                <span style="color: #e74c3c;">⏰ Deadline Passed</span>
+                            {% else %}
+                                <span style="color: #27ae60;">✓ Open for Picks</span>
+                            {% endif %}
+                        </td>
+                        <td>
                             <a href="/admin/{{ s['round'] }}" class="btn btn-small">Enter Results</a>
+                            {% if deadline_passed %}
+                                <a href="/admin/assign-autopicks/{{ s['round'] }}" class="btn btn-small" 
+                                   style="background: #f39c12;" 
+                                   onclick="return confirm('Assign auto-picks to all users who missed Round {{ s['round'] }}?');">
+                                   Auto-Pick All
+                                </a>
+                            {% endif %}
                         </td>
                     </tr>
                     {% endfor %}
@@ -1422,7 +1524,8 @@ def admin_results_selector():
             <a href="/dashboard" class="link">← Back to Dashboard</a>
         </div>
     </div>
-    ''', schedule=schedule, get_race_type_display=get_race_type_display)
+    ''', schedule=schedule, get_race_type_display=get_race_type_display, 
+         get_deadline_for_round=get_deadline_for_round, now_utc=now_utc)
 
 @app.route('/admin/<int:round_num>', methods=['GET', 'POST'])
 def admin_results(round_num):
