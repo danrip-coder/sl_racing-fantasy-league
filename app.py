@@ -959,44 +959,69 @@ def leaderboard():
     c.execute('SELECT id, username FROM users ORDER BY username')
     users = c.fetchall()
     schedule = get_schedule()
-    completed_rounds = []
+    
+    # Get rounds where deadline has passed (show picks even without results)
+    from datetime import timezone
+    now_utc = datetime.now(timezone.utc)
+    visible_rounds = []
+    
     for s in schedule:
-        c.execute('SELECT COUNT(*) as count FROM results WHERE round_num = %s', (s['round'],))
-        if c.fetchone()['count'] > 0:
-            completed_rounds.append(s)
-    if view != 'overall':
-        completed_rounds = [r for r in completed_rounds if r['race_type'] == view]
+        deadline = get_deadline_for_round(s['round'])
+        if deadline and now_utc > deadline:
+            # Check if this round has results
+            c.execute('SELECT COUNT(*) as count FROM results WHERE round_num = %s', (s['round'],))
+            has_results = c.fetchone()['count'] > 0
+            
+            # Add to visible rounds with results flag
+            round_info = dict(s)
+            round_info['has_results'] = has_results
+            
+            # Filter by race type if needed
+            if view == 'overall' or s['race_type'] == view:
+                visible_rounds.append(round_info)
+    
     player_data = []
     for user in users:
         user_id = user['id']
         username = user['username']
         total = 0
         round_picks = {}
-        for rnd_info in completed_rounds:
+        
+        for rnd_info in visible_rounds:
             rnd = rnd_info['round']
-            picks = {'450': {'initials': '—', 'random': False, 'points': 0}, '250': {'initials': '—', 'random': False, 'points': 0}}
+            has_results = rnd_info['has_results']
+            picks = {'450': {'initials': '—', 'random': False, 'points': '-'}, '250': {'initials': '—', 'random': False, 'points': '-'}}
+            
             for cls in ['450', '250']:
                 c.execute('SELECT rider, auto_random FROM picks WHERE user_id = %s AND round_num = %s AND class = %s',
                           (user_id, rnd, cls))
                 row = c.fetchone()
                 if row:
                     initials = get_initials(row['rider'])
-                    c.execute('SELECT position FROM results WHERE round_num = %s AND class = %s AND rider = %s', 
-                              (rnd, cls, row['rider']))
-                    pos = c.fetchone()
-                    points = 0
-                    if pos:
-                        points = get_points(pos['position'])
-                        total += points
+                    points = '-'
+                    
+                    # Only calculate points if results are entered
+                    if has_results:
+                        c.execute('SELECT position FROM results WHERE round_num = %s AND class = %s AND rider = %s', 
+                                  (rnd, cls, row['rider']))
+                        pos = c.fetchone()
+                        if pos:
+                            points = get_points(pos['position'])
+                            total += points
+                    
                     picks[cls] = {'initials': initials, 'random': bool(row['auto_random']), 'points': points}
+            
             round_picks[rnd] = picks
+        
         player_data.append({
             'username': username,
             'total': total,
             'round_picks': round_picks
         })
+    
     player_data.sort(key=lambda x: x['total'], reverse=True)
     conn.close()
+    
     return render_template_string(get_base_style() + '''
     <div class="container">
         <h1>🏆 Season Leaderboard</h1>
@@ -1025,10 +1050,13 @@ def leaderboard():
                         <th style="text-align: center;">Rank</th>
                         <th>Player</th>
                         <th style="text-align: center;">Total Points</th>
-                        {% for rnd_info in completed_rounds %}
-                        <th style="text-align: center;">
+                        {% for rnd_info in visible_rounds %}
+                        <th style="text-align: center; {% if not rnd_info['has_results'] %}background: #f39c12;{% endif %}">
                             R{{ rnd_info['round'] }} {{ get_round_location(rnd_info['round']) }}<br>
                             <small style="opacity: 0.7;">{{ get_race_type_display(rnd_info['race_type'])['emoji'] }} 450 | 250</small>
+                            {% if not rnd_info['has_results'] %}
+                            <br><small style="font-weight: normal; opacity: 0.9;">⏱️ In Progress</small>
+                            {% endif %}
                         </th>
                         {% endfor %}
                     </tr>
@@ -1048,8 +1076,8 @@ def leaderboard():
                         <td style="text-align: center; font-size: 1.4em; font-weight: bold; color: #c9975b;">
                             {{ player.total }}
                         </td>
-                        {% for rnd_info in completed_rounds %}
-                        <td style="text-align: center; font-size: 0.9em;">
+                        {% for rnd_info in visible_rounds %}
+                        <td style="text-align: center; font-size: 0.9em; {% if not rnd_info['has_results'] %}background: #3a3a3a;{% endif %}">
                             <div style="margin-bottom: 3px;">
                                 <span {% if player.round_picks[rnd_info['round']]['450']['random'] %}class="random-pick"{% endif %}>
                                     {{ player.round_picks[rnd_info['round']]['450']['initials'] }}
@@ -1059,9 +1087,15 @@ def leaderboard():
                                     {{ player.round_picks[rnd_info['round']]['250']['initials'] }}
                                 </span>
                             </div>
+                            {% if rnd_info['has_results'] %}
                             <div style="font-size: 0.75em; color: #c9975b; font-weight: 600;">
                                 {{ player.round_picks[rnd_info['round']]['450']['points'] }} | {{ player.round_picks[rnd_info['round']]['250']['points'] }}
                             </div>
+                            {% else %}
+                            <div style="font-size: 0.75em; color: #999; font-style: italic;">
+                                - | -
+                            </div>
+                            {% endif %}
                         </td>
                         {% endfor %}
                     </tr>
@@ -1070,13 +1104,14 @@ def leaderboard():
             </table>
         </div>
         <p style="margin-top: 20px; color: #b0b0b0; font-size: 0.9em;">
-            <span class="random-pick">Red text</span> = random auto-pick (missed deadline)
+            <span class="random-pick">Red text</span> = auto-pick (missed deadline) | 
+            <span style="color: #f39c12;">Orange header</span> = picks visible, results pending
         </p>
         <div style="margin-top: 30px;">
             <a href="/dashboard" class="link">← Back to Dashboard</a>
         </div>
     </div>
-    ''', player_data=player_data, completed_rounds=completed_rounds, session=session, 
+    ''', player_data=player_data, visible_rounds=visible_rounds, session=session, 
          get_round_location=get_round_location, get_race_type_display=get_race_type_display, view=view)
 
 @app.route('/rules')
