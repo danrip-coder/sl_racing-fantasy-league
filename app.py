@@ -80,6 +80,23 @@ def init_db():
                  value TEXT,
                  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
     
+    # ============================================================================
+    # DATABASE INDEXES - For faster query performance
+    # ============================================================================
+    
+    # Index for leaderboard_totals queries (used in leaderboard page)
+    c.execute('CREATE INDEX IF NOT EXISTS idx_leaderboard_totals_view ON leaderboard_totals(view_type, rank)')
+    
+    # Index for user_round_points queries (used in leaderboard page)
+    c.execute('CREATE INDEX IF NOT EXISTS idx_user_round_points_round ON user_round_points(round_num)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_user_round_points_race_type ON user_round_points(race_type, round_num)')
+    
+    # Index for results table (used for results counts)
+    c.execute('CREATE INDEX IF NOT EXISTS idx_results_round ON results(round_num)')
+    
+    # Index for picks table (used in various places)
+    c.execute('CREATE INDEX IF NOT EXISTS idx_picks_user_round ON picks(user_id, round_num)')
+    
     conn.commit()
     conn.close()
 
@@ -1363,8 +1380,11 @@ def leaderboard():
     c = conn.cursor()
     
     # ============================================================================
-    # FAST CACHED LEADERBOARD - Only 3 queries total!
+    # OPTIMIZED LEADERBOARD - Only 5 queries total, single connection!
     # ============================================================================
+    
+    from datetime import timezone
+    now_utc = datetime.now(timezone.utc)
     
     # Query 1: Get totals from cache (pre-calculated, pre-ranked)
     c.execute('''SELECT user_id, username, total_points, rank 
@@ -1373,21 +1393,41 @@ def leaderboard():
                  ORDER BY rank''', (view,))
     totals = c.fetchall()
     
-    # Query 2: Get visible rounds info
-    schedule = get_schedule()
-    from datetime import timezone
-    now_utc = datetime.now(timezone.utc)
+    # Query 2: Get ALL schedule data in ONE query (no separate get_schedule call)
+    c.execute('SELECT * FROM schedule ORDER BY round')
+    schedule = c.fetchall()
     
+    # Query 3: Get results counts for ALL rounds in ONE query
+    c.execute('''SELECT round_num, COUNT(*) as count 
+                 FROM results 
+                 GROUP BY round_num''')
+    results_counts = {row['round_num']: row['count'] for row in c.fetchall()}
+    
+    # Calculate deadlines and visible rounds WITHOUT any DB calls
     visible_rounds = []
     for s in schedule:
-        deadline = get_deadline_for_round(s['round'])
+        # Calculate deadline inline (no DB call!)
+        race_date = s['race_date']
+        location = s['location']
+        if 'CA' in location or 'Seattle' in location:
+            tz_offset = -8
+        elif 'TX' in location or 'IN' in location:
+            tz_offset = -6
+        elif 'FL' in location or 'NC' in location:
+            tz_offset = -5
+        elif 'AZ' in location or 'CO' in location:
+            tz_offset = -7
+        else:
+            tz_offset = -8
+        
+        deadline_local = datetime.combine(race_date, datetime.min.time())
+        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
+        
         if deadline and now_utc > deadline:
-            # Check if round has results (for styling)
-            c.execute('SELECT COUNT(*) as count FROM results WHERE round_num = %s', (s['round'],))
-            has_results = c.fetchone()['count'] > 0
-            
             round_info = dict(s)
-            round_info['has_results'] = has_results
+            round_info['has_results'] = results_counts.get(s['round'], 0) > 0
+            # Pre-calculate location to avoid DB calls in template
+            round_info['short_location'] = location.split(',')[0]
             
             if view == 'overall' or s['race_type'] == view:
                 visible_rounds.append(round_info)
@@ -1395,7 +1435,7 @@ def leaderboard():
     # Get round numbers for query
     round_nums = [r['round'] for r in visible_rounds]
     
-    # Query 3: Get all round details from cache in ONE query
+    # Query 4: Get all round details from cache in ONE query
     round_details = {}
     if round_nums:
         if view == 'overall':
@@ -1420,7 +1460,7 @@ def leaderboard():
                 'random': bool(row['auto_random'])
             }
     
-    # Get last updated time
+    # Query 5: Get last updated time
     c.execute("SELECT updated_at FROM leaderboard_metadata WHERE key = 'last_recalculated'")
     last_updated_row = c.fetchone()
     last_updated = last_updated_row['updated_at'] if last_updated_row else None
@@ -1511,7 +1551,7 @@ def leaderboard():
                         <th style="text-align: center;">Total Points</th>
                         {% for rnd_info in visible_rounds %}
                         <th style="text-align: center; {% if not rnd_info['has_results'] %}background: #f39c12;{% endif %}">
-                            R{{ rnd_info['round'] }} {{ get_round_location(rnd_info['round']) }}<br>
+                            R{{ rnd_info['round'] }} {{ rnd_info['short_location'] }}<br>
                             <small style="opacity: 0.7;">{{ get_race_type_display(rnd_info['race_type'])['emoji'] }} 450 | 250</small>
                             {% if not rnd_info['has_results'] %}
                             <br><small style="font-weight: normal; opacity: 0.9;">⏱️ In Progress</small>
@@ -1572,7 +1612,7 @@ def leaderboard():
         </div>
     </div>
     ''', player_data=player_data, visible_rounds=visible_rounds, session=session, 
-         get_round_location=get_round_location, get_race_type_display=get_race_type_display, 
+         get_race_type_display=get_race_type_display, 
          view=view, cache_empty=cache_empty, last_updated=last_updated)
 
 @app.route('/rules')
