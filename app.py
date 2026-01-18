@@ -3,9 +3,12 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import psycopg2
 from psycopg2.extras import RealDictCursor
 from datetime import datetime, timedelta
+from bs4 import BeautifulSoup
+import requests
 import random
 import os
 import csv
+import re
 from io import StringIO, BytesIO
 from zipfile import ZipFile
 
@@ -182,6 +185,225 @@ def get_round_location(round_num):
 
 def get_race_type_display(race_type):
     return RACE_TYPES.get(race_type, {'name': race_type, 'emoji': '🏍️', 'color': '#c9975b'})
+
+# ============================================================================
+# AUTO-FETCH RESULTS FROM SUPERMOTOCROSS.COM
+# ============================================================================
+
+def get_event_id(round_num):
+    """
+    Get event ID from supermotocross.com based on round information.
+    The site organizes results by events, so we need to find the matching event.
+    """
+    round_info = get_round_info(round_num)
+    if not round_info:
+        return None
+    
+    location = round_info['location'].lower()
+    race_type = round_info['race_type']
+    race_date = round_info['race_date']
+    
+    try:
+        # Fetch the main results/schedule page
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        # Try to fetch the results page based on race type
+        if race_type == 'supercross':
+            url = 'https://www.supermotocross.com/supercross/results'
+        elif race_type == 'motocross':
+            url = 'https://www.supermotocross.com/motocross/results'
+        else:  # SMX
+            url = 'https://www.supermotocross.com/smx/results'
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            # Try alternate URL structure
+            url = f'https://www.supermotocross.com/results'
+            response = requests.get(url, headers=headers, timeout=15)
+        
+        if response.status_code != 200:
+            return None
+            
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Look for event links that match location
+        # Common patterns: links containing city names, round numbers, or dates
+        location_parts = location.replace(',', ' ').split()
+        city = location_parts[0].lower() if location_parts else ''
+        
+        # Search for links containing the location name
+        for link in soup.find_all('a', href=True):
+            link_text = link.get_text().lower()
+            link_href = link['href'].lower()
+            
+            # Check if location matches
+            if city and (city in link_text or city in link_href):
+                # Extract event ID from href
+                # Common patterns: /event/123, /results/event-name, /round/1
+                href = link['href']
+                
+                # Try to extract numeric ID
+                id_match = re.search(r'/(\d+)', href)
+                if id_match:
+                    return id_match.group(1)
+                
+                # Return the full path as identifier
+                if '/event/' in href or '/round/' in href or '/results/' in href:
+                    return href
+        
+        # Fallback: construct event identifier from round info
+        return f"{race_type}-round-{round_num}"
+        
+    except Exception as e:
+        print(f"Error fetching event ID: {e}")
+        return None
+
+def get_overall_url(event_id, rider_class):
+    """
+    Get the URL for overall/combined results for a specific class.
+    """
+    if not event_id:
+        return None
+    
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        # Construct URLs based on common patterns
+        base_urls = [
+            f'https://www.supermotocross.com{event_id}' if event_id.startswith('/') else f'https://www.supermotocross.com/results/{event_id}',
+            f'https://www.supermotocross.com/event/{event_id}/results',
+            f'https://www.supermotocross.com/results/{event_id}',
+        ]
+        
+        class_suffix = '450' if rider_class == '450' else '250'
+        
+        for base_url in base_urls:
+            # Try various URL patterns for class-specific results
+            urls_to_try = [
+                f'{base_url}/{class_suffix}',
+                f'{base_url}?class={class_suffix}',
+                f'{base_url}/overall/{class_suffix}',
+                f'{base_url}#{class_suffix}',
+                base_url,  # Sometimes all classes on one page
+            ]
+            
+            for url in urls_to_try:
+                try:
+                    response = requests.get(url, headers=headers, timeout=10)
+                    if response.status_code == 200:
+                        # Verify this page has results content
+                        if 'position' in response.text.lower() or 'place' in response.text.lower() or 'finish' in response.text.lower():
+                            return url
+                except:
+                    continue
+        
+        return None
+        
+    except Exception as e:
+        print(f"Error getting overall URL: {e}")
+        return None
+
+def parse_results(url, rider_class, round_num):
+    """
+    Parse results from a given URL and return a dictionary of {rider_name: position}.
+    Matches riders against the database to ensure we only get valid riders.
+    """
+    if not url:
+        return {}
+    
+    try:
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        response = requests.get(url, headers=headers, timeout=15)
+        if response.status_code != 200:
+            return {}
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
+        
+        # Get our registered riders for this class
+        if rider_class == '450':
+            our_riders = get_riders_by_class('450')
+        else:
+            our_riders = get_available_250_riders(round_num)
+        
+        # Create lookup dict for case-insensitive matching
+        rider_lookup = {r.lower(): r for r in our_riders}
+        
+        results = {}
+        
+        # Method 1: Look for tables with results
+        for table in soup.find_all('table'):
+            rows = table.find_all('tr')
+            for row in rows:
+                cells = row.find_all(['td', 'th'])
+                if len(cells) >= 2:
+                    # Look for position (number) and name
+                    for i, cell in enumerate(cells):
+                        cell_text = cell.get_text().strip()
+                        
+                        # Check if this cell contains a position number
+                        if cell_text.isdigit():
+                            position = int(cell_text)
+                            
+                            # Look for rider name in adjacent cells
+                            for j, other_cell in enumerate(cells):
+                                if i != j:
+                                    name_text = other_cell.get_text().strip()
+                                    # Check if this matches one of our riders
+                                    name_lower = name_text.lower()
+                                    
+                                    # Try exact match
+                                    if name_lower in rider_lookup:
+                                        rider_name = rider_lookup[name_lower]
+                                        if rider_name not in results:
+                                            results[rider_name] = position
+                                        break
+                                    
+                                    # Try partial match (first and last name)
+                                    for rider_key, rider_name in rider_lookup.items():
+                                        if rider_key in name_lower or name_lower in rider_key:
+                                            if rider_name not in results:
+                                                results[rider_name] = position
+                                            break
+        
+        # Method 2: Look for structured result elements (common in modern sites)
+        result_containers = soup.find_all(['div', 'li'], class_=lambda x: x and ('result' in x.lower() or 'position' in x.lower() or 'standing' in x.lower()))
+        
+        for container in result_containers:
+            text = container.get_text()
+            
+            # Extract position and name using patterns
+            # Pattern: "1. Rider Name" or "1 Rider Name" or "Pos: 1 Name: Rider Name"
+            patterns = [
+                r'(\d+)\s*[\.\)\-]\s*([A-Za-z\s]+)',
+                r'pos[ition]*[:\s]+(\d+)[,\s]+([A-Za-z\s]+)',
+            ]
+            
+            for pattern in patterns:
+                matches = re.findall(pattern, text, re.IGNORECASE)
+                for match in matches:
+                    try:
+                        position = int(match[0])
+                        name_text = match[1].strip().lower()
+                        
+                        if name_text in rider_lookup:
+                            rider_name = rider_lookup[name_text]
+                            if rider_name not in results:
+                                results[rider_name] = position
+                    except:
+                        continue
+        
+        return results
+        
+    except Exception as e:
+        print(f"Error parsing results: {e}")
+        return {}
 
 def get_base_style():
     return '''
@@ -1416,6 +1638,72 @@ def admin_riders():
     </div>
     ''', riders=riders)
 
+@app.route('/admin/fetch-results/<int:round_num>')
+def fetch_results(round_num):
+    if session.get('username') != 'admin':
+        return redirect(url_for('login'))
+    
+    round_info = get_round_info(round_num)
+    if not round_info:
+        flash('Invalid round')
+        return redirect(url_for('admin_results_selector'))
+    
+    location = round_info['location']
+    race_type = round_info['race_type']
+    
+    # Try to fetch event ID
+    event_id = get_event_id(round_num)
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    results_450 = {}
+    results_250 = {}
+    fetch_errors = []
+    
+    if event_id:
+        # Try to fetch results for each class
+        for cls in ['450', '250']:
+            try:
+                url = get_overall_url(event_id, cls)
+                if url:
+                    results = parse_results(url, cls, round_num)
+                    if results:
+                        if cls == '450':
+                            results_450 = results
+                        else:
+                            results_250 = results
+                        
+                        # Save results to database
+                        for rider, pos in results.items():
+                            c.execute('DELETE FROM results WHERE round_num = %s AND class = %s AND rider = %s',
+                                      (round_num, cls, rider))
+                            c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s)',
+                                      (round_num, cls, rider, pos))
+                else:
+                    fetch_errors.append(f'Could not find results URL for {cls} class')
+            except Exception as e:
+                fetch_errors.append(f'Error fetching {cls} results: {str(e)}')
+    else:
+        fetch_errors.append(f'Could not find event on supermotocross.com for {location}')
+    
+    conn.commit()
+    conn.close()
+    
+    # Provide detailed feedback
+    total_results = len(results_450) + len(results_250)
+    
+    if total_results > 0:
+        flash(f'✓ Auto-fetch completed for Round {round_num}! Found {len(results_450)} riders in 450 class, {len(results_250)} riders in 250 class.')
+        if fetch_errors:
+            for error in fetch_errors:
+                flash(f'⚠️ {error}')
+    else:
+        flash(f'⚠️ No results found for Round {round_num} ({location}). The results may not be available yet on supermotocross.com, or you may need to enter them manually.')
+        for error in fetch_errors:
+            flash(f'Debug: {error}')
+    
+    return redirect(url_for('admin_results_selector'))
+
 @app.route('/admin/assign-autopicks/<int:round_num>')
 def admin_assign_autopicks(round_num):
     if session.get('username') != 'admin':
@@ -1543,6 +1831,11 @@ def admin_results_selector():
                         <td>
                             <a href="/admin/{{ s['round'] }}" class="btn btn-small">Enter Results</a>
                             {% if deadline_passed %}
+                                <a href="/admin/fetch-results/{{ s['round'] }}" class="btn btn-small" 
+                                   style="background: #27ae60;"
+                                   onclick="return confirm('Auto-fetch results from supermotocross.com for Round {{ s['round'] }}?');">
+                                   Auto-Fetch
+                                </a>
                                 <a href="/admin/assign-autopicks/{{ s['round'] }}" class="btn btn-small" 
                                    style="background: #f39c12;" 
                                    onclick="return confirm('Assign auto-picks to all users who missed Round {{ s['round'] }}?');">
