@@ -42,10 +42,188 @@ def init_db():
                  id SERIAL PRIMARY KEY, name TEXT UNIQUE NOT NULL,
                  class TEXT NOT NULL CHECK (class IN ('450', '250_West', '250_East')),
                  active BOOLEAN DEFAULT TRUE)''')
+    
+    # ============================================================================
+    # LEADERBOARD CACHE TABLES - For fast leaderboard loading
+    # ============================================================================
+    
+    # Cache table for per-user, per-round, per-class data (stores everything needed for display)
+    c.execute('''CREATE TABLE IF NOT EXISTS user_round_points (
+                 id SERIAL PRIMARY KEY,
+                 user_id INTEGER NOT NULL,
+                 username TEXT NOT NULL,
+                 round_num INTEGER NOT NULL,
+                 race_type TEXT,
+                 class TEXT NOT NULL,
+                 rider TEXT,
+                 rider_initials TEXT,
+                 position INTEGER,
+                 points INTEGER DEFAULT 0,
+                 auto_random BOOLEAN DEFAULT FALSE,
+                 UNIQUE(user_id, round_num, class))''')
+    
+    # Cache table for pre-calculated totals per user per view type
+    c.execute('''CREATE TABLE IF NOT EXISTS leaderboard_totals (
+                 id SERIAL PRIMARY KEY,
+                 user_id INTEGER NOT NULL,
+                 username TEXT NOT NULL,
+                 view_type TEXT NOT NULL,
+                 total_points INTEGER DEFAULT 0,
+                 rank INTEGER,
+                 last_updated TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                 UNIQUE(user_id, view_type))''')
+    
+    # Track when leaderboard was last recalculated
+    c.execute('''CREATE TABLE IF NOT EXISTS leaderboard_metadata (
+                 id SERIAL PRIMARY KEY,
+                 key TEXT UNIQUE NOT NULL,
+                 value TEXT,
+                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+    
     conn.commit()
     conn.close()
 
 init_db()
+
+# ============================================================================
+# LEADERBOARD CACHE FUNCTIONS
+# ============================================================================
+
+def recalculate_leaderboard():
+    """
+    Recalculate the entire leaderboard cache. Called by admin only.
+    This populates user_round_points and leaderboard_totals tables.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # Get all users
+    c.execute('SELECT id, username FROM users ORDER BY username')
+    users = c.fetchall()
+    
+    # Get schedule with race types
+    c.execute('SELECT round, race_type FROM schedule ORDER BY round')
+    schedule = c.fetchall()
+    round_race_types = {s['round']: s['race_type'] for s in schedule}
+    
+    # Get all rounds that have passed deadline
+    from datetime import timezone
+    now_utc = datetime.now(timezone.utc)
+    
+    visible_rounds = []
+    for s in schedule:
+        deadline = get_deadline_for_round(s['round'])
+        if deadline and now_utc > deadline:
+            visible_rounds.append(s['round'])
+    
+    # Clear existing cache
+    c.execute('DELETE FROM user_round_points')
+    c.execute('DELETE FROM leaderboard_totals')
+    
+    # Get all picks in one query
+    c.execute('''SELECT user_id, round_num, class, rider, auto_random 
+                 FROM picks WHERE round_num = ANY(%s)''', (visible_rounds,))
+    all_picks = c.fetchall()
+    
+    # Index picks by (user_id, round_num, class)
+    picks_index = {}
+    for pick in all_picks:
+        key = (pick['user_id'], pick['round_num'], pick['class'])
+        picks_index[key] = pick
+    
+    # Get all results in one query
+    c.execute('SELECT round_num, class, rider, position FROM results')
+    all_results = c.fetchall()
+    
+    # Index results by (round_num, class, rider)
+    results_index = {}
+    for result in all_results:
+        key = (result['round_num'], result['class'], result['rider'])
+        results_index[key] = result['position']
+    
+    # Calculate and cache data for each user
+    user_totals = {user['id']: {'overall': 0, 'supercross': 0, 'motocross': 0, 'SMX': 0} 
+                   for user in users}
+    
+    for user in users:
+        user_id = user['id']
+        username = user['username']
+        
+        for rnd in visible_rounds:
+            race_type = round_race_types.get(rnd, 'supercross')
+            
+            for cls in ['450', '250']:
+                pick_key = (user_id, rnd, cls)
+                pick = picks_index.get(pick_key)
+                
+                rider = None
+                rider_initials = '—'
+                position = None
+                points = 0
+                auto_random = False
+                
+                if pick:
+                    rider = pick['rider']
+                    rider_initials = get_initials(rider) if rider else '—'
+                    auto_random = bool(pick['auto_random'])
+                    
+                    # Look up result
+                    result_key = (rnd, cls, rider)
+                    if result_key in results_index:
+                        position = results_index[result_key]
+                        points = get_points(position)
+                        
+                        # Add to totals
+                        user_totals[user_id]['overall'] += points
+                        user_totals[user_id][race_type] += points
+                
+                # Insert into cache
+                c.execute('''INSERT INTO user_round_points 
+                             (user_id, username, round_num, race_type, class, rider, rider_initials, position, points, auto_random)
+                             VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                             ON CONFLICT (user_id, round_num, class) 
+                             DO UPDATE SET username = EXCLUDED.username, race_type = EXCLUDED.race_type,
+                                           rider = EXCLUDED.rider, rider_initials = EXCLUDED.rider_initials,
+                                           position = EXCLUDED.position, points = EXCLUDED.points,
+                                           auto_random = EXCLUDED.auto_random''',
+                          (user_id, username, rnd, race_type, cls, rider, rider_initials, position, points, auto_random))
+    
+    # Calculate ranks and insert totals for each view type
+    for view_type in ['overall', 'supercross', 'motocross', 'SMX']:
+        # Sort users by points for this view
+        sorted_users = sorted(users, key=lambda u: user_totals[u['id']][view_type], reverse=True)
+        
+        for rank, user in enumerate(sorted_users, 1):
+            user_id = user['id']
+            username = user['username']
+            total = user_totals[user_id][view_type]
+            
+            c.execute('''INSERT INTO leaderboard_totals (user_id, username, view_type, total_points, rank, last_updated)
+                         VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                         ON CONFLICT (user_id, view_type) 
+                         DO UPDATE SET username = EXCLUDED.username, total_points = EXCLUDED.total_points,
+                                       rank = EXCLUDED.rank, last_updated = CURRENT_TIMESTAMP''',
+                      (user_id, username, view_type, total, rank))
+    
+    # Update metadata
+    c.execute('''INSERT INTO leaderboard_metadata (key, value, updated_at)
+                 VALUES ('last_recalculated', %s, CURRENT_TIMESTAMP)
+                 ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = CURRENT_TIMESTAMP''',
+              (now_utc.isoformat(),))
+    
+    conn.commit()
+    conn.close()
+    
+    return len(users), len(visible_rounds)
+
+def get_leaderboard_last_updated():
+    """Get when the leaderboard was last recalculated"""
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute("SELECT value, updated_at FROM leaderboard_metadata WHERE key = 'last_recalculated'")
+    result = c.fetchone()
+    conn.close()
+    return result
 
 def get_schedule():
     conn = get_db_connection()
@@ -919,6 +1097,10 @@ def dashboard():
             <a href="/admin/results-selector" class="btn btn-small">Enter Results</a>
             <a href="/admin/manage-users" class="btn btn-small">Manage Users</a>
             <a href="/admin/export" class="btn btn-small">Export Database</a>
+            <a href="/admin/recalculate-leaderboard" class="btn btn-small" style="background: #27ae60;"
+               onclick="this.innerHTML='⏳ Calculating...'; this.style.pointerEvents='none';">
+               🔄 Recalculate Leaderboard
+            </a>
         </div>
         {% endif %}
         <div style="margin-top: 40px;">
@@ -1175,78 +1357,131 @@ def pick(round_num):
 def leaderboard():
     if 'user_id' not in session:
         return redirect(url_for('login'))
+    
     view = request.args.get('view', 'overall')
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT id, username FROM users ORDER BY username')
-    users = c.fetchall()
-    schedule = get_schedule()
     
-    # Get rounds where deadline has passed (show picks even without results)
+    # ============================================================================
+    # FAST CACHED LEADERBOARD - Only 3 queries total!
+    # ============================================================================
+    
+    # Query 1: Get totals from cache (pre-calculated, pre-ranked)
+    c.execute('''SELECT user_id, username, total_points, rank 
+                 FROM leaderboard_totals 
+                 WHERE view_type = %s 
+                 ORDER BY rank''', (view,))
+    totals = c.fetchall()
+    
+    # Query 2: Get visible rounds info
+    schedule = get_schedule()
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
-    visible_rounds = []
     
+    visible_rounds = []
     for s in schedule:
         deadline = get_deadline_for_round(s['round'])
         if deadline and now_utc > deadline:
-            # Check if this round has results
+            # Check if round has results (for styling)
             c.execute('SELECT COUNT(*) as count FROM results WHERE round_num = %s', (s['round'],))
             has_results = c.fetchone()['count'] > 0
             
-            # Add to visible rounds with results flag
             round_info = dict(s)
             round_info['has_results'] = has_results
             
-            # Filter by race type if needed
             if view == 'overall' or s['race_type'] == view:
                 visible_rounds.append(round_info)
     
-    player_data = []
-    for user in users:
-        user_id = user['id']
-        username = user['username']
-        total = 0
-        round_picks = {}
+    # Get round numbers for query
+    round_nums = [r['round'] for r in visible_rounds]
+    
+    # Query 3: Get all round details from cache in ONE query
+    round_details = {}
+    if round_nums:
+        if view == 'overall':
+            c.execute('''SELECT user_id, round_num, class, rider_initials, points, auto_random 
+                         FROM user_round_points 
+                         WHERE round_num = ANY(%s)
+                         ORDER BY user_id, round_num, class''', (round_nums,))
+        else:
+            c.execute('''SELECT user_id, round_num, class, rider_initials, points, auto_random 
+                         FROM user_round_points 
+                         WHERE round_num = ANY(%s) AND race_type = %s
+                         ORDER BY user_id, round_num, class''', (round_nums, view))
         
+        all_round_data = c.fetchall()
+        
+        # Index by (user_id, round_num, class) for fast lookup
+        for row in all_round_data:
+            key = (row['user_id'], row['round_num'], row['class'])
+            round_details[key] = {
+                'initials': row['rider_initials'] or '—',
+                'points': row['points'] if row['points'] is not None else '-',
+                'random': bool(row['auto_random'])
+            }
+    
+    # Get last updated time
+    c.execute("SELECT updated_at FROM leaderboard_metadata WHERE key = 'last_recalculated'")
+    last_updated_row = c.fetchone()
+    last_updated = last_updated_row['updated_at'] if last_updated_row else None
+    
+    conn.close()
+    
+    # Build player_data structure for template (fast - no DB calls, just dict lookups)
+    player_data = []
+    for total_row in totals:
+        user_id = total_row['user_id']
+        username = total_row['username']
+        total = total_row['total_points']
+        rank = total_row['rank']
+        
+        round_picks = {}
         for rnd_info in visible_rounds:
             rnd = rnd_info['round']
             has_results = rnd_info['has_results']
-            picks = {'450': {'initials': '—', 'random': False, 'points': '-'}, '250': {'initials': '—', 'random': False, 'points': '-'}}
             
-            for cls in ['450', '250']:
-                c.execute('SELECT rider, auto_random FROM picks WHERE user_id = %s AND round_num = %s AND class = %s',
-                          (user_id, rnd, cls))
-                row = c.fetchone()
-                if row:
-                    initials = get_initials(row['rider'])
-                    points = '-'
-                    
-                    # Only calculate points if results are entered
-                    if has_results:
-                        c.execute('SELECT position FROM results WHERE round_num = %s AND class = %s AND rider = %s', 
-                                  (rnd, cls, row['rider']))
-                        pos = c.fetchone()
-                        if pos:
-                            points = get_points(pos['position'])
-                            total += points
-                    
-                    picks[cls] = {'initials': initials, 'random': bool(row['auto_random']), 'points': points}
+            pick_450 = round_details.get((user_id, rnd, '450'), {'initials': '—', 'points': '-', 'random': False})
+            pick_250 = round_details.get((user_id, rnd, '250'), {'initials': '—', 'points': '-', 'random': False})
             
-            round_picks[rnd] = picks
+            # If no results yet, show '-' for points
+            if not has_results:
+                pick_450 = dict(pick_450)
+                pick_250 = dict(pick_250)
+                pick_450['points'] = '-'
+                pick_250['points'] = '-'
+            
+            round_picks[rnd] = {
+                '450': pick_450,
+                '250': pick_250
+            }
         
         player_data.append({
             'username': username,
             'total': total,
+            'rank': rank,
             'round_picks': round_picks
         })
     
-    player_data.sort(key=lambda x: x['total'], reverse=True)
-    conn.close()
+    # Check if cache is empty (first time or needs recalculation)
+    cache_empty = len(player_data) == 0
     
     return render_template_string(get_base_style() + '''
     <div class="container">
         <h1>🏆 Season Leaderboard</h1>
+        
+        {% if cache_empty %}
+        <div class="card" style="background: #f39c12; color: #1a1a1a; border-left-color: #e67e22;">
+            <h3 style="margin-top: 0; color: #1a1a1a;">⚠️ Leaderboard Not Yet Calculated</h3>
+            <p>The leaderboard cache is empty. An admin needs to click "Recalculate Leaderboard" to populate the standings.</p>
+        </div>
+        {% endif %}
+        
+        {% if last_updated %}
+        <p style="color: #888; font-size: 0.85em; margin-bottom: 15px;">
+            📊 Last updated: {{ last_updated.strftime('%b %d, %Y at %I:%M %p') }} UTC
+        </p>
+        {% endif %}
+        
         <div class="leaderboard-tabs">
             <div class="leaderboard-tab {% if view == 'overall' %}active{% endif %}" 
                  onclick="window.location.href='/leaderboard?view=overall'">
@@ -1265,6 +1500,8 @@ def leaderboard():
                 🏁 SMX
             </div>
         </div>
+        
+        {% if not cache_empty %}
         <div style="overflow-x: auto;">
             <table>
                 <thead>
@@ -1284,14 +1521,13 @@ def leaderboard():
                     </tr>
                 </thead>
                 <tbody>
-                    {% for i in range(player_data|length) %}
-                    {% set player = player_data[i] %}
+                    {% for player in player_data %}
                     <tr {% if player.username == session.username %}style="background: #3d3d3d; font-weight: 600; border-left: 3px solid #c9975b;"{% endif %}>
                         <td style="text-align: center; font-size: 1.3em; font-weight: bold;">
-                            {% if i == 0 %}🥇
-                            {% elif i == 1 %}🥈
-                            {% elif i == 2 %}🥉
-                            {% else %}{{ i+1 }}
+                            {% if player.rank == 1 %}🥇
+                            {% elif player.rank == 2 %}🥈
+                            {% elif player.rank == 3 %}🥉
+                            {% else %}{{ player.rank }}
                             {% endif %}
                         </td>
                         <td style="font-weight: 600;">{{ player.username }}</td>
@@ -1329,12 +1565,15 @@ def leaderboard():
             <span class="random-pick">Red text</span> = auto-pick (missed deadline) | 
             <span style="color: #f39c12;">Orange header</span> = picks visible, results pending
         </p>
+        {% endif %}
+        
         <div style="margin-top: 30px;">
             <a href="/dashboard" class="link">← Back to Dashboard</a>
         </div>
     </div>
     ''', player_data=player_data, visible_rounds=visible_rounds, session=session, 
-         get_round_location=get_round_location, get_race_type_display=get_race_type_display, view=view)
+         get_round_location=get_round_location, get_race_type_display=get_race_type_display, 
+         view=view, cache_empty=cache_empty, last_updated=last_updated)
 
 @app.route('/rules')
 def rules():
@@ -1775,6 +2014,20 @@ def admin_assign_autopicks(round_num):
     flash(f'Auto-picks assigned to {assigned_count} user(s) who missed Round {round_num} deadline')
     return redirect(url_for('admin_results_selector'))
 
+@app.route('/admin/recalculate-leaderboard')
+def admin_recalculate_leaderboard():
+    """Admin-only route to recalculate the entire leaderboard cache"""
+    if session.get('username') != 'admin':
+        return redirect(url_for('login'))
+    
+    try:
+        num_users, num_rounds = recalculate_leaderboard()
+        flash(f'✓ Leaderboard recalculated successfully! Processed {num_users} users across {num_rounds} rounds.')
+    except Exception as e:
+        flash(f'⚠️ Error recalculating leaderboard: {str(e)}')
+    
+    return redirect(url_for('admin_results_selector'))
+
 @app.route('/admin/results-selector')
 def admin_results_selector():
     if session.get('username') != 'admin':
@@ -1784,6 +2037,9 @@ def admin_results_selector():
     # Get current time for checking deadlines
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
+    
+    # Get last leaderboard update time
+    last_updated = get_leaderboard_last_updated()
     
     return render_template_string(get_base_style() + '''
     <div class="container">
@@ -1795,6 +2051,30 @@ def admin_results_selector():
                 {% endfor %}
             {% endif %}
         {% endwith %}
+        
+        <!-- LEADERBOARD RECALCULATION SECTION -->
+        <div class="card" style="background: #2a4a2a; border-left-color: #27ae60; margin-bottom: 20px;">
+            <h3 style="margin-top: 0; color: #27ae60;">📊 Leaderboard Cache</h3>
+            <p style="color: #b0b0b0; margin-bottom: 15px;">
+                The leaderboard is cached for fast loading. After entering results or assigning auto-picks, 
+                click the button below to update the leaderboard.
+            </p>
+            {% if last_updated %}
+            <p style="color: #888; font-size: 0.9em; margin-bottom: 15px;">
+                Last updated: {{ last_updated['updated_at'].strftime('%b %d, %Y at %I:%M %p') }} UTC
+            </p>
+            {% else %}
+            <p style="color: #f39c12; font-size: 0.9em; margin-bottom: 15px;">
+                ⚠️ Leaderboard has never been calculated. Click below to initialize.
+            </p>
+            {% endif %}
+            <a href="/admin/recalculate-leaderboard" class="btn" 
+               style="background: #27ae60;"
+               onclick="this.innerHTML='⏳ Calculating...'; this.style.pointerEvents='none';">
+               🔄 Recalculate Leaderboard
+            </a>
+        </div>
+        
         <div class="card">
             <h3 style="margin-top: 0;">Manage rounds - Enter results or assign auto-picks:</h3>
             <table>
@@ -1853,7 +2133,7 @@ def admin_results_selector():
         </div>
     </div>
     ''', schedule=schedule, get_race_type_display=get_race_type_display, 
-         get_deadline_for_round=get_deadline_for_round, now_utc=now_utc)
+         get_deadline_for_round=get_deadline_for_round, now_utc=now_utc, last_updated=last_updated)
 
 @app.route('/admin/<int:round_num>', methods=['GET', 'POST'])
 def admin_results(round_num):
