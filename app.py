@@ -110,6 +110,7 @@ def recalculate_leaderboard():
     """
     Recalculate the entire leaderboard cache. Called by admin only.
     This populates user_round_points and leaderboard_totals tables.
+    OPTIMIZED: Calculates deadlines inline to avoid extra DB connections.
     """
     conn = get_db_connection()
     c = conn.cursor()
@@ -118,18 +119,33 @@ def recalculate_leaderboard():
     c.execute('SELECT id, username FROM users ORDER BY username')
     users = c.fetchall()
     
-    # Get schedule with race types
-    c.execute('SELECT round, race_type FROM schedule ORDER BY round')
+    # Get schedule with race types AND location for deadline calculation
+    c.execute('SELECT round, race_type, race_date, location FROM schedule ORDER BY round')
     schedule = c.fetchall()
     round_race_types = {s['round']: s['race_type'] for s in schedule}
     
-    # Get all rounds that have passed deadline
+    # Get all rounds that have passed deadline (calculate inline, no extra DB calls)
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
     
     visible_rounds = []
     for s in schedule:
-        deadline = get_deadline_for_round(s['round'])
+        # Calculate deadline inline instead of calling get_deadline_for_round
+        location = s['location']
+        if 'CA' in location or 'Seattle' in location:
+            tz_offset = -8
+        elif 'TX' in location or 'IN' in location:
+            tz_offset = -6
+        elif 'FL' in location or 'NC' in location:
+            tz_offset = -5
+        elif 'AZ' in location or 'CO' in location:
+            tz_offset = -7
+        else:
+            tz_offset = -8
+        
+        deadline_local = datetime.combine(s['race_date'], datetime.min.time())
+        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
+        
         if deadline and now_utc > deadline:
             visible_rounds.append(s['round'])
     
@@ -279,49 +295,45 @@ def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
     Get top 10 riders by championship points for smart auto-pick.
     Only considers riders who have actually scored points in previous rounds.
     Falls back to random selection from riders with results if top 10 are all excluded.
+    OPTIMIZED: Uses single query instead of one per rider.
     """
     conn = get_db_connection()
     c = conn.cursor()
     
-    # Get all riders for the class
+    # Get all riders for the class (these functions open their own connections, but are fast)
     if rider_class == '250':
-        # For 250, get riders available for this round (East/West/Combined)
         available_riders = get_available_250_riders(round_num)
     else:
         available_riders = get_riders_by_class('450')
     
-    # Calculate total points for each rider from all previous rounds
-    rider_points = {}
-    riders_with_results = []  # Track riders who have actually appeared in results
+    if not available_riders:
+        conn.close()
+        return []
     
-    for rider in available_riders:
-        c.execute('''SELECT SUM(
-                        CASE 
+    # OPTIMIZED: Single query to get points for ALL riders at once
+    c.execute('''SELECT rider,
+                        SUM(CASE 
                             WHEN position = 1 THEN 25
                             WHEN position = 2 THEN 22
                             WHEN position = 3 THEN 20
                             WHEN position = 4 THEN 18
                             WHEN position >= 5 AND position <= 20 THEN 22 - position
                             ELSE 0
-                        END
-                     ) as total_points,
-                     COUNT(*) as race_count
-                     FROM results 
-                     WHERE rider = %s AND round_num < %s''', (rider, round_num))
-        result = c.fetchone()
-        total_points = result['total_points'] if result['total_points'] else 0
-        race_count = result['race_count'] if result['race_count'] else 0
-        
-        rider_points[rider] = total_points
-        
-        # Only consider riders who have actually appeared in results
-        if race_count > 0:
-            riders_with_results.append(rider)
+                        END) as total_points,
+                        COUNT(*) as race_count
+                 FROM results 
+                 WHERE rider = ANY(%s) AND round_num < %s
+                 GROUP BY rider''', (available_riders, round_num))
     
+    results = c.fetchall()
     conn.close()
     
+    # Build lookup of rider points and race counts
+    rider_points = {r['rider']: r['total_points'] or 0 for r in results}
+    riders_with_results = [r['rider'] for r in results if r['race_count'] > 0]
+    
     # Sort riders WHO HAVE RESULTS by points (descending), then by name for consistency
-    riders_with_points = [(rider, rider_points[rider]) for rider in riders_with_results]
+    riders_with_points = [(rider, rider_points.get(rider, 0)) for rider in riders_with_results]
     sorted_riders = sorted(riders_with_points, key=lambda x: (-x[1], x[0]))
     
     # Get top 10 riders who have actually scored points (points > 0)
@@ -339,11 +351,10 @@ def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
     fallback_riders = [r for r in riders_with_results if r not in (exclude_riders or [])]
     if fallback_riders:
         # Sort by points descending for better selection
-        fallback_riders = sorted(fallback_riders, key=lambda r: rider_points[r], reverse=True)
+        fallback_riders = sorted(fallback_riders, key=lambda r: rider_points.get(r, 0), reverse=True)
         return fallback_riders[:10] if len(fallback_riders) > 10 else fallback_riders
     
     # Fallback 2: If no riders have results yet (very early season), use all available riders
-    # This should only happen for Round 1 before any results are entered
     fallback_all = [r for r in available_riders if r not in (exclude_riders or [])]
     return fallback_all
 
