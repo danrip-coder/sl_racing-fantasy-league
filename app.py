@@ -371,13 +371,37 @@ def get_initials(name):
     return ''.join(p[0].upper() for p in parts if p)
 
 def get_current_round():
+    """Get the current active round (first round whose deadline hasn't passed)"""
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
-    schedule = get_schedule()
+    
+    # Get schedule with all data needed to calculate deadlines
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT round, race_date, location FROM schedule ORDER BY round')
+    schedule = c.fetchall()
+    conn.close()
+    
     for s in schedule:
-        deadline = get_deadline_for_round(s['round'])
-        if deadline and now_utc < deadline:
+        # Calculate deadline inline (no extra DB calls)
+        location = s['location']
+        if 'CA' in location or 'Seattle' in location:
+            tz_offset = -8
+        elif 'TX' in location or 'IN' in location:
+            tz_offset = -6
+        elif 'FL' in location or 'NC' in location:
+            tz_offset = -5
+        elif 'AZ' in location or 'CO' in location:
+            tz_offset = -7
+        else:
+            tz_offset = -8
+        
+        deadline_local = datetime.combine(s['race_date'], datetime.min.time())
+        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
+        
+        if now_utc < deadline:
             return s['round']
+    
     return len(schedule) + 1 if schedule else 1
 
 def get_round_info(round_num):
