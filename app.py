@@ -1437,29 +1437,33 @@ def leaderboard():
     c = conn.cursor()
     
     # ============================================================================
-    # OPTIMIZED LEADERBOARD - Uses cache + live fallback for uncached rounds
+    # SIMPLE CACHE-ONLY LEADERBOARD - Fast, relies on admin to recalculate
     # ============================================================================
     
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
     
-    # Query 1: Get ALL schedule data in ONE query
+    # Query 1: Get totals from cache (pre-calculated, pre-ranked)
+    c.execute('''SELECT user_id, username, total_points, rank 
+                 FROM leaderboard_totals 
+                 WHERE view_type = %s 
+                 ORDER BY rank''', (view,))
+    totals = c.fetchall()
+    
+    # Query 2: Get ALL schedule data
     c.execute('SELECT * FROM schedule ORDER BY round')
     schedule = c.fetchall()
     
-    # Query 2: Get results counts for ALL rounds in ONE query
+    # Query 3: Get results counts for ALL rounds
     c.execute('''SELECT round_num, COUNT(*) as count 
                  FROM results 
                  GROUP BY round_num''')
     results_counts = {row['round_num']: row['count'] for row in c.fetchall()}
     
-    # Calculate deadlines and visible rounds WITHOUT any DB calls
+    # Calculate visible rounds (deadline passed)
     visible_rounds = []
-    round_race_types = {}
     for s in schedule:
-        round_race_types[s['round']] = s['race_type']
-        
-        # Calculate deadline inline (no DB call!)
+        # Calculate deadline inline
         race_date = s['race_date']
         location = s['location']
         if 'CA' in location or 'Seattle' in location:
@@ -1479,7 +1483,6 @@ def leaderboard():
         if deadline and now_utc > deadline:
             round_info = dict(s)
             round_info['has_results'] = results_counts.get(s['round'], 0) > 0
-            # Pre-calculate location to avoid DB calls in template
             round_info['short_location'] = location.split(',')[0]
             
             if view == 'overall' or s['race_type'] == view:
@@ -1488,9 +1491,8 @@ def leaderboard():
     # Get round numbers for query
     round_nums = [r['round'] for r in visible_rounds]
     
-    # Query 3: Get all round details from cache
+    # Query 4: Get all round details from cache
     round_details = {}
-    cached_rounds = set()
     if round_nums:
         if view == 'overall':
             c.execute('''SELECT user_id, round_num, class, rider_initials, points, auto_random 
@@ -1507,7 +1509,6 @@ def leaderboard():
         
         # Index by (user_id, round_num, class) for fast lookup
         for row in all_round_data:
-            cached_rounds.add(row['round_num'])
             key = (row['user_id'], row['round_num'], row['class'])
             round_details[key] = {
                 'initials': row['rider_initials'] or '—',
@@ -1515,80 +1516,14 @@ def leaderboard():
                 'random': bool(row['auto_random'])
             }
     
-    # Query 4: Get live picks for any uncached rounds (newly passed deadlines)
-    uncached_rounds = [r for r in round_nums if r not in cached_rounds]
-    if uncached_rounds:
-        c.execute('''SELECT p.user_id, p.round_num, p.class, p.rider, p.auto_random,
-                            r.position
-                     FROM picks p
-                     LEFT JOIN results r ON r.round_num = p.round_num 
-                                         AND r.class = p.class 
-                                         AND r.rider = p.rider
-                     WHERE p.round_num = ANY(%s)''', (uncached_rounds,))
-        live_picks = c.fetchall()
-        
-        for row in live_picks:
-            # Filter by race_type if not overall view
-            if view != 'overall':
-                round_type = round_race_types.get(row['round_num'])
-                if round_type != view:
-                    continue
-            
-            key = (row['user_id'], row['round_num'], row['class'])
-            points = get_points(row['position']) if row['position'] else '-'
-            round_details[key] = {
-                'initials': get_initials(row['rider']) if row['rider'] else '—',
-                'points': points,
-                'random': bool(row['auto_random'])
-            }
-    
-    # Query 5: Get totals from cache OR calculate live if cache is empty/stale
-    c.execute('''SELECT user_id, username, total_points, rank 
-                 FROM leaderboard_totals 
-                 WHERE view_type = %s 
-                 ORDER BY rank''', (view,))
-    totals = c.fetchall()
-    
-    # If cache is empty or we have uncached rounds, calculate totals from live data
-    if not totals or uncached_rounds:
-        c.execute('SELECT id, username FROM users ORDER BY username')
-        users = c.fetchall()
-        
-        # Calculate totals from round_details (which now includes live data)
-        user_totals = {}
-        for user in users:
-            user_id = user['id']
-            total = 0
-            for rnd_info in visible_rounds:
-                rnd = rnd_info['round']
-                if rnd_info['has_results']:
-                    for cls in ['450', '250']:
-                        key = (user_id, rnd, cls)
-                        if key in round_details:
-                            pts = round_details[key]['points']
-                            if isinstance(pts, int):
-                                total += pts
-            user_totals[user_id] = {'username': user['username'], 'total': total}
-        
-        # Sort and rank
-        sorted_users = sorted(user_totals.items(), key=lambda x: x[1]['total'], reverse=True)
-        totals = []
-        for rank, (user_id, data) in enumerate(sorted_users, 1):
-            totals.append({
-                'user_id': user_id,
-                'username': data['username'],
-                'total_points': data['total'],
-                'rank': rank
-            })
-    
-    # Query 6: Get last updated time
+    # Query 5: Get last updated time
     c.execute("SELECT updated_at FROM leaderboard_metadata WHERE key = 'last_recalculated'")
     last_updated_row = c.fetchone()
     last_updated = last_updated_row['updated_at'] if last_updated_row else None
     
     conn.close()
     
-    # Build player_data structure for template (fast - no DB calls, just dict lookups)
+    # Build player_data structure for template
     player_data = []
     for total_row in totals:
         user_id = total_row['user_id']
@@ -1623,7 +1558,7 @@ def leaderboard():
             'round_picks': round_picks
         })
     
-    # Check if cache is empty (first time or needs recalculation)
+    # Check if cache is empty
     cache_empty = len(player_data) == 0
     
     return render_template_string(get_base_style() + '''
