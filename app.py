@@ -2,7 +2,11 @@ from flask import Flask, request, redirect, url_for, render_template_string, ses
 from werkzeug.security import generate_password_hash, check_password_hash
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+try:
+    from zoneinfo import ZoneInfo
+except ImportError:
+    from backports.zoneinfo import ZoneInfo
 from bs4 import BeautifulSoup
 import requests
 import random
@@ -21,6 +25,26 @@ RACE_TYPES = {
     'motocross': {'name': 'Motocross', 'emoji': '🏞️', 'color': '#27ae60'},
     'SMX': {'name': 'SuperMotocross', 'emoji': '🏁', 'color': '#f39c12'}
 }
+
+def get_location_timezone(location):
+    """
+    Return a ZoneInfo timezone for the given race location string.
+    Uses named timezones so DST is handled automatically.
+    """
+    if 'AZ' in location:
+        return ZoneInfo('America/Phoenix')          # No DST year-round
+    elif 'CA' in location or 'Seattle' in location or 'WA' in location:
+        return ZoneInfo('America/Los_Angeles')       # PST/PDT
+    elif 'CO' in location:
+        return ZoneInfo('America/Denver')            # MST/MDT
+    elif 'TX' in location:
+        return ZoneInfo('America/Chicago')           # CST/CDT
+    elif 'IN' in location:
+        return ZoneInfo('America/Indiana/Indianapolis')  # EST/EDT
+    elif 'FL' in location or 'NC' in location or 'GA' in location or 'SC' in location:
+        return ZoneInfo('America/New_York')          # EST/EDT
+    else:
+        return ZoneInfo('America/Los_Angeles')       # Default Pacific
 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
@@ -124,29 +148,14 @@ def recalculate_leaderboard():
     schedule = c.fetchall()
     round_race_types = {s['round']: s['race_type'] for s in schedule}
     
-    # Get all rounds that have passed deadline (calculate inline, no extra DB calls)
-    from datetime import timezone
+    # Get all rounds that have passed deadline
     now_utc = datetime.now(timezone.utc)
-    
+
     visible_rounds = []
     for s in schedule:
-        # Calculate deadline inline instead of calling get_deadline_for_round
-        location = s['location']
-        if 'CA' in location or 'Seattle' in location:
-            tz_offset = -8
-        elif 'TX' in location or 'IN' in location:
-            tz_offset = -6
-        elif 'FL' in location or 'NC' in location:
-            tz_offset = -5
-        elif 'AZ' in location or 'CO' in location:
-            tz_offset = -7
-        else:
-            tz_offset = -8
-        
-        deadline_local = datetime.combine(s['race_date'], datetime.min.time())
-        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
-        
-        if deadline and now_utc > deadline:
+        tz = get_location_timezone(s['location'])
+        deadline = datetime.combine(s['race_date'], datetime.min.time(), tzinfo=tz)
+        if now_utc > deadline:
             visible_rounds.append(s['round'])
     
     # Clear existing cache
@@ -295,22 +304,36 @@ def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
     Get top 10 riders by championship points for smart auto-pick.
     Only considers riders who have actually scored points in previous rounds.
     Falls back to random selection from riders with results if top 10 are all excluded.
-    OPTIMIZED: Uses single query instead of one per rider.
+    OPTIMIZED: Uses single DB connection for all queries.
     """
     conn = get_db_connection()
     c = conn.cursor()
-    
-    # Get all riders for the class (these functions open their own connections, but are fast)
+
+    # Get available riders using the same connection (avoids extra connections)
     if rider_class == '250':
-        available_riders = get_available_250_riders(round_num)
+        c.execute('SELECT class_250 FROM schedule WHERE round = %s', (round_num,))
+        result = c.fetchone()
+        if not result:
+            conn.close()
+            return []
+        class_250 = result['class_250']
+        if class_250 == 'West':
+            c.execute('SELECT name FROM riders WHERE class = %s AND active = TRUE ORDER BY name', ('250_West',))
+        elif class_250 == 'East':
+            c.execute('SELECT name FROM riders WHERE class = %s AND active = TRUE ORDER BY name', ('250_East',))
+        else:
+            c.execute('SELECT name FROM riders WHERE class IN (%s, %s) AND active = TRUE ORDER BY name',
+                      ('250_West', '250_East'))
+        available_riders = [r['name'] for r in c.fetchall()]
     else:
-        available_riders = get_riders_by_class('450')
-    
+        c.execute('SELECT name FROM riders WHERE class = %s AND active = TRUE ORDER BY name', ('450',))
+        available_riders = [r['name'] for r in c.fetchall()]
+
     if not available_riders:
         conn.close()
         return []
-    
-    # OPTIMIZED: Single query to get points for ALL riders at once
+
+    # Single query to get points for ALL riders at once
     c.execute('''SELECT rider,
                         SUM(CASE 
                             WHEN position = 1 THEN 25
@@ -324,36 +347,35 @@ def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
                  FROM results 
                  WHERE rider = ANY(%s) AND round_num < %s
                  GROUP BY rider''', (available_riders, round_num))
-    
+
     results = c.fetchall()
     conn.close()
-    
+
     # Build lookup of rider points and race counts
     rider_points = {r['rider']: r['total_points'] or 0 for r in results}
     riders_with_results = [r['rider'] for r in results if r['race_count'] > 0]
-    
+
     # Sort riders WHO HAVE RESULTS by points (descending), then by name for consistency
     riders_with_points = [(rider, rider_points.get(rider, 0)) for rider in riders_with_results]
     sorted_riders = sorted(riders_with_points, key=lambda x: (-x[1], x[0]))
-    
+
     # Get top 10 riders who have actually scored points (points > 0)
     top_riders_with_points = [rider for rider, points in sorted_riders if points > 0][:10]
-    
+
     # Filter out excluded riders (from 3-round rule)
     if exclude_riders:
         top_riders_with_points = [r for r in top_riders_with_points if r not in exclude_riders]
-    
+
     # If we have riders with points after filtering, use them
     if top_riders_with_points:
         return top_riders_with_points
-    
+
     # Fallback 1: Use riders who have appeared in results (even with 0 points from DNFs etc)
     fallback_riders = [r for r in riders_with_results if r not in (exclude_riders or [])]
     if fallback_riders:
-        # Sort by points descending for better selection
         fallback_riders = sorted(fallback_riders, key=lambda r: rider_points.get(r, 0), reverse=True)
         return fallback_riders[:10] if len(fallback_riders) > 10 else fallback_riders
-    
+
     # Fallback 2: If no riders have results yet (very early season), use all available riders
     fallback_all = [r for r in available_riders if r not in (exclude_riders or [])]
     return fallback_all
@@ -372,36 +394,20 @@ def get_initials(name):
 
 def get_current_round():
     """Get the current active round (first round whose deadline hasn't passed)"""
-    from datetime import timezone
     now_utc = datetime.now(timezone.utc)
-    
-    # Get schedule with all data needed to calculate deadlines
+
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT round, race_date, location FROM schedule ORDER BY round')
     schedule = c.fetchall()
     conn.close()
-    
+
     for s in schedule:
-        # Calculate deadline inline (no extra DB calls)
-        location = s['location']
-        if 'CA' in location or 'Seattle' in location:
-            tz_offset = -8
-        elif 'TX' in location or 'IN' in location:
-            tz_offset = -6
-        elif 'FL' in location or 'NC' in location:
-            tz_offset = -5
-        elif 'AZ' in location or 'CO' in location:
-            tz_offset = -7
-        else:
-            tz_offset = -8
-        
-        deadline_local = datetime.combine(s['race_date'], datetime.min.time())
-        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
-        
+        tz = get_location_timezone(s['location'])
+        deadline = datetime.combine(s['race_date'], datetime.min.time(), tzinfo=tz)
         if now_utc < deadline:
             return s['round']
-    
+
     return len(schedule) + 1 if schedule else 1
 
 def get_round_info(round_num):
@@ -418,20 +424,8 @@ def get_deadline_for_round(round_num):
         return None
     race_date = round_info['race_date']
     location = round_info['location']
-    if 'CA' in location or 'Seattle' in location:
-        tz_offset = -8
-    elif 'TX' in location or 'IN' in location:
-        tz_offset = -6
-    elif 'FL' in location or 'NC' in location:
-        tz_offset = -5
-    elif 'AZ' in location or 'CO' in location:
-        tz_offset = -7
-    else:
-        tz_offset = -8
-    deadline_local = datetime.combine(race_date, datetime.min.time())
-    from datetime import timezone as tz
-    deadline_utc = deadline_local.replace(tzinfo=tz(timedelta(hours=tz_offset)))
-    return deadline_utc
+    tz = get_location_timezone(location)
+    return datetime.combine(race_date, datetime.min.time(), tzinfo=tz)
 
 def get_round_location(round_num):
     round_info = get_round_info(round_num)
@@ -1199,7 +1193,6 @@ def pick(round_num):
     deadline = get_deadline_for_round(round_num)
     deadline_passed = False
     if deadline:
-        from datetime import timezone
         now_utc = datetime.now(timezone.utc)
         deadline_passed = now_utc > deadline
     riders_450 = get_riders_by_class('450')
@@ -1233,13 +1226,15 @@ def pick(round_num):
         elif rider_450 not in riders_450 or rider_250 not in riders_250:
             flash('Invalid rider')
         else:
-            c.execute('SELECT rider FROM picks WHERE user_id = %s AND class = %s AND round_num IN (%s, %s)',
-                      (session['user_id'], '450', round_num-1, round_num-2))
+            # 3-round rule: check ±2 rounds in both directions (handles out-of-order admin ops)
+            nearby_rounds = [r for r in [round_num-2, round_num-1, round_num+1, round_num+2] if r > 0]
+            c.execute('''SELECT rider FROM picks WHERE user_id = %s AND class = %s AND round_num = ANY(%s)''',
+                      (session['user_id'], '450', nearby_rounds))
             if rider_450 in [r['rider'] for r in c.fetchall()]:
                 flash('Cannot pick the same 450 rider within 3 rounds')
             else:
-                c.execute('SELECT rider FROM picks WHERE user_id = %s AND class = %s AND round_num IN (%s, %s)',
-                          (session['user_id'], '250', round_num-1, round_num-2))
+                c.execute('''SELECT rider FROM picks WHERE user_id = %s AND class = %s AND round_num = ANY(%s)''',
+                          (session['user_id'], '250', nearby_rounds))
                 if rider_250 in [r['rider'] for r in c.fetchall()]:
                     flash('Cannot pick the same 250 rider within 3 rounds')
                 else:
@@ -1463,8 +1458,7 @@ def leaderboard():
     # ============================================================================
     # SIMPLE CACHE-ONLY LEADERBOARD - Fast, relies on admin to recalculate
     # ============================================================================
-    
-    from datetime import timezone
+
     now_utc = datetime.now(timezone.utc)
     
     # Query 1: Get totals from cache (pre-calculated, pre-ranked)
@@ -1487,24 +1481,10 @@ def leaderboard():
     # Calculate visible rounds (deadline passed)
     visible_rounds = []
     for s in schedule:
-        # Calculate deadline inline
-        race_date = s['race_date']
-        location = s['location']
-        if 'CA' in location or 'Seattle' in location:
-            tz_offset = -8
-        elif 'TX' in location or 'IN' in location:
-            tz_offset = -6
-        elif 'FL' in location or 'NC' in location:
-            tz_offset = -5
-        elif 'AZ' in location or 'CO' in location:
-            tz_offset = -7
-        else:
-            tz_offset = -8
-        
-        deadline_local = datetime.combine(race_date, datetime.min.time())
-        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
-        
-        if deadline and now_utc > deadline:
+        tz = get_location_timezone(s['location'])
+        deadline = datetime.combine(s['race_date'], datetime.min.time(), tzinfo=tz)
+
+        if now_utc > deadline:
             round_info = dict(s)
             round_info['has_results'] = results_counts.get(s['round'], 0) > 0
             round_info['short_location'] = location.split(',')[0]
@@ -1787,9 +1767,17 @@ def admin_schedule():
                 flash('Round number already exists')
         elif action == 'delete':
             round_id = request.form.get('round_id')
+            # Get round number first so we can cascade-delete picks and results
+            c.execute('SELECT round FROM schedule WHERE id = %s', (round_id,))
+            sched_row = c.fetchone()
+            if sched_row:
+                round_num_to_delete = sched_row['round']
+                c.execute('DELETE FROM results WHERE round_num = %s', (round_num_to_delete,))
+                c.execute('DELETE FROM picks WHERE round_num = %s', (round_num_to_delete,))
+                c.execute('DELETE FROM user_round_points WHERE round_num = %s', (round_num_to_delete,))
             c.execute('DELETE FROM schedule WHERE id = %s', (round_id,))
             conn.commit()
-            flash('Round deleted successfully!')
+            flash('Round deleted successfully (picks, results, and cache entries removed)!')
     c.execute('SELECT * FROM schedule ORDER BY round')
     schedule = c.fetchall()
     conn.close()
@@ -2018,35 +2006,40 @@ def fetch_results(round_num):
     results_450 = {}
     results_250 = {}
     fetch_errors = []
-    
-    if event_id:
-        # Try to fetch results for each class
-        for cls in ['450', '250']:
-            try:
-                url = get_overall_url(event_id, cls)
-                if url:
-                    results = parse_results(url, cls, round_num)
-                    if results:
-                        if cls == '450':
-                            results_450 = results
-                        else:
-                            results_250 = results
-                        
-                        # Save results to database
-                        for rider, pos in results.items():
-                            c.execute('DELETE FROM results WHERE round_num = %s AND class = %s AND rider = %s',
-                                      (round_num, cls, rider))
-                            c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s)',
-                                      (round_num, cls, rider, pos))
-                else:
-                    fetch_errors.append(f'Could not find results URL for {cls} class')
-            except Exception as e:
-                fetch_errors.append(f'Error fetching {cls} results: {str(e)}')
-    else:
-        fetch_errors.append(f'Could not find event on supermotocross.com for {location}')
-    
-    conn.commit()
-    conn.close()
+
+    try:
+        if event_id:
+            # Try to fetch results for each class
+            for cls in ['450', '250']:
+                try:
+                    url = get_overall_url(event_id, cls)
+                    if url:
+                        results = parse_results(url, cls, round_num)
+                        if results:
+                            if cls == '450':
+                                results_450 = results
+                            else:
+                                results_250 = results
+
+                            # Save results to database
+                            for rider, pos in results.items():
+                                c.execute('DELETE FROM results WHERE round_num = %s AND class = %s AND rider = %s',
+                                          (round_num, cls, rider))
+                                c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s)',
+                                          (round_num, cls, rider, pos))
+                    else:
+                        fetch_errors.append(f'Could not find results URL for {cls} class')
+                except Exception as e:
+                    fetch_errors.append(f'Error fetching {cls} results: {str(e)}')
+        else:
+            fetch_errors.append(f'Could not find event on supermotocross.com for {location}')
+
+        conn.commit()
+    except Exception as e:
+        conn.rollback()
+        fetch_errors.append(f'Database error: {str(e)}')
+    finally:
+        conn.close()
     
     # Provide detailed feedback
     total_results = len(results_450) + len(results_250)
@@ -2075,7 +2068,6 @@ def admin_assign_autopicks(round_num):
     
     # Check if deadline has passed
     deadline = get_deadline_for_round(round_num)
-    from datetime import timezone
     now_utc = datetime.now(timezone.utc)
     
     if deadline and now_utc <= deadline:
@@ -2161,14 +2153,21 @@ def admin_results_selector():
     if session.get('username') != 'admin':
         return redirect(url_for('login'))
     schedule = get_schedule()
-    
-    # Get current time for checking deadlines
-    from datetime import timezone
+
     now_utc = datetime.now(timezone.utc)
-    
+
+    # Pre-calculate deadline_passed for each round in Python (avoids N DB calls in template)
+    schedule_with_status = []
+    for s in schedule:
+        tz = get_location_timezone(s['location'])
+        deadline = datetime.combine(s['race_date'], datetime.min.time(), tzinfo=tz)
+        s_dict = dict(s)
+        s_dict['deadline_passed'] = now_utc > deadline
+        schedule_with_status.append(s_dict)
+
     # Get last leaderboard update time
     last_updated = get_leaderboard_last_updated()
-    
+
     return render_template_string(get_base_style() + '''
     <div class="container">
         <h1>🔧 Admin - Rounds Management</h1>
@@ -2217,9 +2216,7 @@ def admin_results_selector():
                     </tr>
                 </thead>
                 <tbody>
-                    {% for s in schedule %}
-                    {% set deadline = get_deadline_for_round(s['round']) %}
-                    {% set deadline_passed = deadline and now_utc > deadline %}
+                    {% for s in schedule_with_status %}
                     <tr>
                         <td><strong>{{ s['round'] }}</strong></td>
                         <td>{{ s['race_date'].strftime('%b %d, %Y') }}</td>
@@ -2230,7 +2227,7 @@ def admin_results_selector():
                             </span>
                         </td>
                         <td>
-                            {% if deadline_passed %}
+                            {% if s['deadline_passed'] %}
                                 <span style="color: #e74c3c;">⏰ Deadline Passed</span>
                             {% else %}
                                 <span style="color: #27ae60;">✓ Open for Picks</span>
@@ -2238,7 +2235,7 @@ def admin_results_selector():
                         </td>
                         <td>
                             <a href="/admin/{{ s['round'] }}" class="btn btn-small">Enter Results</a>
-                            {% if deadline_passed %}
+                            {% if s['deadline_passed'] %}
                                 <a href="/admin/fetch-results/{{ s['round'] }}" class="btn btn-small" 
                                    style="background: #27ae60;"
                                    onclick="return confirm('Auto-fetch results from supermotocross.com for Round {{ s['round'] }}?');">
@@ -2260,8 +2257,8 @@ def admin_results_selector():
             <a href="/dashboard" class="link">← Back to Dashboard</a>
         </div>
     </div>
-    ''', schedule=schedule, get_race_type_display=get_race_type_display, 
-         get_deadline_for_round=get_deadline_for_round, now_utc=now_utc, last_updated=last_updated)
+    ''', schedule_with_status=schedule_with_status, get_race_type_display=get_race_type_display,
+         last_updated=last_updated)
 
 @app.route('/admin/<int:round_num>', methods=['GET', 'POST'])
 def admin_results(round_num):
@@ -2276,17 +2273,43 @@ def admin_results(round_num):
     if request.method == 'POST':
         conn = get_db_connection()
         c = conn.cursor()
-        for cls, riders in [('450', riders_450), ('250', riders_250)]:
-            for rider in riders:
-                pos_str = request.form.get(f'{cls}_{rider.replace(" ", "_")}')
-                if pos_str and pos_str.isdigit():
+        try:
+            # Collect submitted positions and check for duplicates per class
+            submitted = {}
+            for cls, riders in [('450', riders_450), ('250', riders_250)]:
+                positions_seen = {}
+                for rider in riders:
+                    pos_str = request.form.get(f'{cls}_{rider.replace(" ", "_")}')
+                    if pos_str and pos_str.isdigit():
+                        pos = int(pos_str)
+                        if pos in positions_seen:
+                            flash(f'⚠️ Duplicate position {pos} in {cls} class '
+                                  f'({rider} and {positions_seen[pos]}). Fix and resubmit.')
+                            conn.close()
+                            return redirect(url_for('admin_results', round_num=round_num))
+                        positions_seen[pos] = rider
+                        submitted.setdefault(cls, []).append((rider, pos))
+
+            # All valid — apply to DB
+            saved_count = 0
+            for cls, entries in submitted.items():
+                for rider, pos in entries:
                     c.execute('DELETE FROM results WHERE round_num = %s AND class = %s AND rider = %s',
                               (round_num, cls, rider))
                     c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s)',
-                              (round_num, cls, rider, int(pos_str)))
-        conn.commit()
-        conn.close()
-        flash('Manual results saved')
+                              (round_num, cls, rider, pos))
+                    saved_count += 1
+
+            conn.commit()
+            if saved_count > 0:
+                flash(f'✓ Manual results saved — {saved_count} rider positions recorded.')
+            else:
+                flash('No positions were entered. Fill in at least one position to save.')
+        except Exception as e:
+            conn.rollback()
+            flash(f'⚠️ Error saving results: {str(e)}')
+        finally:
+            conn.close()
     location = round_info['location'].split(',')[0]
     race_type_info = get_race_type_display(round_info['race_type'])
     return render_template_string(get_base_style() + '''
@@ -2428,9 +2451,16 @@ def admin_export():
             rows = c.fetchall()
             csv_buffer = StringIO()
             csv_writer = csv.writer(csv_buffer)
-            csv_writer.writerow(rows[0].keys() if rows else [])
-            for row in rows:
-                csv_writer.writerow(row.values())
+            if rows:
+                csv_writer.writerow(rows[0].keys())
+                for row in rows:
+                    csv_writer.writerow(row.values())
+            else:
+                # Fetch column names from information schema so empty tables still have headers
+                c.execute('''SELECT column_name FROM information_schema.columns
+                             WHERE table_name = %s ORDER BY ordinal_position''', (table,))
+                col_names = [r['column_name'] for r in c.fetchall()]
+                csv_writer.writerow(col_names)
             zip_file.writestr(f'{table}.csv', csv_buffer.getvalue())
     conn.close()
     zip_buffer.seek(0)
@@ -2442,4 +2472,4 @@ def logout():
     return redirect(url_for('login'))
 
 if __name__ == '__main__':
-    app.run(debug=True)
+    app.run(debug=os.environ.get('FLASK_DEBUG', 'false').lower() == 'true')
