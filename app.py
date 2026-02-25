@@ -1764,7 +1764,11 @@ def admin_schedule():
                 conn.commit()
                 flash('Round added successfully!')
             except psycopg2.IntegrityError:
-                flash('Round number already exists')
+                conn.rollback()
+                flash('Round number already exists — each round number must be unique.')
+            except Exception as e:
+                conn.rollback()
+                flash(f'Error adding round: {str(e)}')
         elif action == 'delete':
             round_id = request.form.get('round_id')
             # Get round number first so we can cascade-delete picks and results
