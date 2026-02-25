@@ -1502,7 +1502,7 @@ def leaderboard():
         if now_utc > deadline:
             round_info = dict(s)
             round_info['has_results'] = results_counts.get(s['round'], 0) > 0
-            round_info['short_location'] = location.split(',')[0]
+            round_info['short_location'] = s['location'].split(',')[0]
             
             if view == 'overall' or s['race_type'] == view:
                 visible_rounds.append(round_info)
