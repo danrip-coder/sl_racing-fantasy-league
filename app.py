@@ -1906,7 +1906,11 @@ def admin_riders():
                 conn.commit()
                 flash(f'Rider {name} added successfully!')
             except psycopg2.IntegrityError:
-                flash('Rider already exists')
+                conn.rollback()
+                flash('A rider with that name already exists.')
+            except Exception as e:
+                conn.rollback()
+                flash(f'Error adding rider: {str(e)}')
         elif action == 'toggle':
             rider_id = request.form.get('rider_id')
             c.execute('UPDATE riders SET active = NOT active WHERE id = %s', (rider_id,))
