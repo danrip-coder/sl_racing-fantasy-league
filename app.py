@@ -2152,113 +2152,149 @@ def admin_recalculate_leaderboard():
 def admin_results_selector():
     if session.get('username') != 'admin':
         return redirect(url_for('login'))
-    schedule = get_schedule()
 
+    schedule = get_schedule()
     now_utc = datetime.now(timezone.utc)
 
-    # Pre-calculate deadline_passed for each round in Python (avoids N DB calls in template)
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT round_num, COUNT(*) as cnt FROM results GROUP BY round_num')
+    results_counts = {row['round_num']: row['cnt'] for row in c.fetchall()}
+    c.execute('SELECT round_num, COUNT(*) as cnt FROM picks GROUP BY round_num')
+    picks_counts = {row['round_num']: row['cnt'] for row in c.fetchall()}
+    conn.close()
+
     schedule_with_status = []
     for s in schedule:
         tz = get_location_timezone(s['location'])
         deadline = datetime.combine(s['race_date'], datetime.min.time(), tzinfo=tz)
         s_dict = dict(s)
         s_dict['deadline_passed'] = now_utc > deadline
+        s_dict['has_results'] = results_counts.get(s['round'], 0) > 0
+        s_dict['picks_count'] = picks_counts.get(s['round'], 0)
+        s_dict['results_count'] = results_counts.get(s['round'], 0)
         schedule_with_status.append(s_dict)
 
-    # Get last leaderboard update time
     last_updated = get_leaderboard_last_updated()
+    upcoming = [s for s in schedule_with_status if not s['deadline_passed']]
+    past = [s for s in schedule_with_status if s['deadline_passed']]
 
-    return render_template_string(get_base_style() + '''
+    return render_template_string(get_base_style() + """
+    <style>
+        .hub-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
+        @media (max-width: 700px) { .hub-grid { grid-template-columns: 1fr; } }
+        .hub-stat { background: #363636; border-radius: 8px; padding: 18px 22px; border: 1px solid #3d3d3d; text-align: center; }
+        .hub-stat .stat-num { font-size: 2.2em; font-weight: 700; color: #c9975b; }
+        .hub-stat .stat-label { color: #b0b0b0; font-size: 0.9em; margin-top: 4px; }
+        .round-card { background: #363636; border-radius: 8px; border: 1px solid #3d3d3d; margin-bottom: 12px; overflow: hidden; }
+        .round-card-header { display: flex; align-items: center; gap: 14px; padding: 13px 18px; background: #3a3a3a; border-bottom: 1px solid #4a4a4a; flex-wrap: wrap; }
+        .round-num-badge { background: #c9975b; color: #1a1a1a; font-weight: 700; border-radius: 6px; padding: 4px 10px; white-space: nowrap; }
+        .round-card-body { padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
+        .round-meta { display: flex; gap: 18px; flex-wrap: wrap; }
+        .round-meta-item { font-size: 0.85em; color: #b0b0b0; }
+        .round-meta-item strong { color: #e0e0e0; }
+        .round-actions { display: flex; gap: 8px; flex-wrap: wrap; }
+        .section-divider { border: none; border-top: 2px solid #4a4a4a; margin: 28px 0 18px; }
+        .lb-card { background: #2a4a2a; border-radius: 8px; padding: 18px 22px; border: 1px solid #3a6a3a; margin-bottom: 26px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
+    </style>
     <div class="container">
-        <h1>🔧 Admin - Rounds Management</h1>
+        <h1>&#128295; Admin Hub</h1>
         {% with messages = get_flashed_messages() %}
-            {% if messages %}
-                {% for message in messages %}
-                    <div class="flash">{{ message }}</div>
-                {% endfor %}
-            {% endif %}
+            {% if messages %}{% for msg in messages %}<div class="flash">{{ msg }}</div>{% endfor %}{% endif %}
         {% endwith %}
-        
-        <!-- LEADERBOARD RECALCULATION SECTION -->
-        <div class="card" style="background: #2a4a2a; border-left-color: #27ae60; margin-bottom: 20px;">
-            <h3 style="margin-top: 0; color: #27ae60;">📊 Leaderboard Cache</h3>
-            <p style="color: #b0b0b0; margin-bottom: 15px;">
-                The leaderboard is cached for fast loading. After entering results or assigning auto-picks, 
-                click the button below to update the leaderboard.
-            </p>
-            {% if last_updated %}
-            <p style="color: #888; font-size: 0.9em; margin-bottom: 15px;">
-                Last updated: {{ last_updated['updated_at'].strftime('%b %d, %Y at %I:%M %p') }} UTC
-            </p>
-            {% else %}
-            <p style="color: #f39c12; font-size: 0.9em; margin-bottom: 15px;">
-                ⚠️ Leaderboard has never been calculated. Click below to initialize.
-            </p>
-            {% endif %}
-            <a href="/admin/recalculate-leaderboard" class="btn" 
-               style="background: #27ae60;"
-               onclick="this.innerHTML='⏳ Calculating...'; this.style.pointerEvents='none';">
-               🔄 Recalculate Leaderboard
+
+        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 22px;">
+            <a href="/admin/schedule" class="btn btn-small">&#128197; Schedule</a>
+            <a href="/admin/riders" class="btn btn-small">Riders</a>
+            <a href="/admin/manage-users" class="btn btn-small">&#128101; Users</a>
+            <a href="/admin/export" class="btn btn-small">Export DB</a>
+        </div>
+
+        <div class="lb-card">
+            <div>
+                <h3 style="margin: 0; color: #27ae60;">&#128202; Leaderboard Cache</h3>
+                {% if last_updated %}
+                <p style="color: #888; font-size: 0.85em; margin: 5px 0 0;">Last updated: {{ last_updated['updated_at'].strftime('%b %d, %Y at %I:%M %p') }} UTC</p>
+                {% else %}
+                <p style="color: #f39c12; font-size: 0.85em; margin: 5px 0 0;">Never calculated</p>
+                {% endif %}
+            </div>
+            <a href="/admin/recalculate-leaderboard" class="btn" style="background: #27ae60;"
+               onclick="this.innerHTML='Calculating...'; this.style.pointerEvents='none';">
+               &#128260; Recalculate Leaderboard
             </a>
         </div>
-        
-        <div class="card">
-            <h3 style="margin-top: 0;">Manage rounds - Enter results or assign auto-picks:</h3>
-            <table>
-                <thead>
-                    <tr>
-                        <th>Round</th>
-                        <th>Date</th>
-                        <th>Location</th>
-                        <th>Race Type</th>
-                        <th>Status</th>
-                        <th>Actions</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for s in schedule_with_status %}
-                    <tr>
-                        <td><strong>{{ s['round'] }}</strong></td>
-                        <td>{{ s['race_date'].strftime('%b %d, %Y') }}</td>
-                        <td>{{ s['location'] }}</td>
-                        <td>
-                            <span class="race-type-badge" style="background: {{ get_race_type_display(s['race_type'])['color'] }}20; color: {{ get_race_type_display(s['race_type'])['color'] }}; border: 1px solid {{ get_race_type_display(s['race_type'])['color'] }};">
-                                {{ get_race_type_display(s['race_type'])['emoji'] }} {{ get_race_type_display(s['race_type'])['name'] }}
-                            </span>
-                        </td>
-                        <td>
-                            {% if s['deadline_passed'] %}
-                                <span style="color: #e74c3c;">⏰ Deadline Passed</span>
-                            {% else %}
-                                <span style="color: #27ae60;">✓ Open for Picks</span>
-                            {% endif %}
-                        </td>
-                        <td>
-                            <a href="/admin/{{ s['round'] }}" class="btn btn-small">Enter Results</a>
-                            {% if s['deadline_passed'] %}
-                                <a href="/admin/fetch-results/{{ s['round'] }}" class="btn btn-small" 
-                                   style="background: #27ae60;"
-                                   onclick="return confirm('Auto-fetch results from supermotocross.com for Round {{ s['round'] }}?');">
-                                   Auto-Fetch
-                                </a>
-                                <a href="/admin/assign-autopicks/{{ s['round'] }}" class="btn btn-small" 
-                                   style="background: #f39c12;" 
-                                   onclick="return confirm('Assign auto-picks to all users who missed Round {{ s['round'] }}?');">
-                                   Auto-Pick All
-                                </a>
-                            {% endif %}
-                        </td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+
+        <div class="hub-grid">
+            <div class="hub-stat"><div class="stat-num">{{ past|length }}</div><div class="stat-label">Rounds Completed</div></div>
+            <div class="hub-stat"><div class="stat-num">{{ upcoming|length }}</div><div class="stat-label">Rounds Upcoming</div></div>
         </div>
-        <div style="margin-top: 30px;">
-            <a href="/dashboard" class="link">← Back to Dashboard</a>
+
+        {% if upcoming %}
+        <h3 style="color: #27ae60; margin-bottom: 10px;">&#10003; Open for Picks</h3>
+        {% for s in upcoming %}
+        <div class="round-card">
+            <div class="round-card-header">
+                <span class="round-num-badge">R{{ s['round'] }}</span>
+                <span style="font-weight:600;">{{ s['location'] }}</span>
+                <span class="race-type-badge" style="background:{{ get_race_type_display(s['race_type'])['color'] }}20;color:{{ get_race_type_display(s['race_type'])['color'] }};border:1px solid {{ get_race_type_display(s['race_type'])['color'] }};">
+                    {{ get_race_type_display(s['race_type'])['emoji'] }} {{ get_race_type_display(s['race_type'])['name'] }}
+                </span>
+                <span style="color:#27ae60;font-size:0.9em;margin-left:auto;">{{ s['race_date'].strftime('%b %d, %Y') }}</span>
+            </div>
+            <div class="round-card-body">
+                <div class="round-meta">
+                    <div class="round-meta-item">250: <strong>{{ s['class_250'] }}</strong></div>
+                    <div class="round-meta-item">Picks in: <strong>{{ s['picks_count'] }}</strong></div>
+                </div>
+                <div class="round-actions">
+                    <a href="/admin/player-picks/{{ s['round'] }}" class="btn btn-small" style="background:#8e44ad;">&#9998; Edit Player Picks</a>
+                </div>
+            </div>
         </div>
+        {% endfor %}
+        {% endif %}
+
+        {% if past %}
+        <hr class="section-divider">
+        <h3 style="color:#e74c3c;margin-bottom:10px;">&#8987; Deadline Passed</h3>
+        {% for s in past %}
+        <div class="round-card" style="border-color:{{ '#3a5a3a' if s['has_results'] else '#5a3a3a' }};">
+            <div class="round-card-header">
+                <span class="round-num-badge">R{{ s['round'] }}</span>
+                <span style="font-weight:600;">{{ s['location'] }}</span>
+                <span class="race-type-badge" style="background:{{ get_race_type_display(s['race_type'])['color'] }}20;color:{{ get_race_type_display(s['race_type'])['color'] }};border:1px solid {{ get_race_type_display(s['race_type'])['color'] }};">
+                    {{ get_race_type_display(s['race_type'])['emoji'] }} {{ get_race_type_display(s['race_type'])['name'] }}
+                </span>
+                <span style="color:#e74c3c;font-size:0.9em;margin-left:auto;">{{ s['race_date'].strftime('%b %d, %Y') }}</span>
+            </div>
+            <div class="round-card-body">
+                <div class="round-meta">
+                    <div class="round-meta-item">250: <strong>{{ s['class_250'] }}</strong></div>
+                    <div class="round-meta-item">
+                        Results:
+                        {% if s['has_results'] %}<strong style="color:#27ae60;">{{ s['results_count'] }} entries</strong>
+                        {% else %}<strong style="color:#e74c3c;">Not entered</strong>{% endif %}
+                    </div>
+                    <div class="round-meta-item">Picks: <strong>{{ s['picks_count'] }}</strong></div>
+                </div>
+                <div class="round-actions">
+                    <a href="/admin/{{ s['round'] }}" class="btn btn-small">&#128203; Enter Results</a>
+                    <a href="/admin/fetch-results/{{ s['round'] }}" class="btn btn-small" style="background:#27ae60;"
+                       onclick="return confirm('Auto-fetch results for Round {{ s['round'] }}?');">Auto-Fetch</a>
+                    <a href="/admin/assign-autopicks/{{ s['round'] }}" class="btn btn-small" style="background:#f39c12;"
+                       onclick="return confirm('Assign auto-picks for all users who missed Round {{ s['round'] }}?');">Auto-Pick All</a>
+                    <a href="/admin/player-picks/{{ s['round'] }}" class="btn btn-small" style="background:#8e44ad;">&#9998; Edit Player Picks</a>
+                </div>
+            </div>
+        </div>
+        {% endfor %}
+        {% endif %}
+
+        <div style="margin-top:30px;"><a href="/dashboard" class="link">&#8592; Back to Dashboard</a></div>
     </div>
-    ''', schedule_with_status=schedule_with_status, get_race_type_display=get_race_type_display,
-         last_updated=last_updated)
+    """, upcoming=upcoming, past=past, get_race_type_display=get_race_type_display, last_updated=last_updated)
+
 
 @app.route('/admin/<int:round_num>', methods=['GET', 'POST'])
 def admin_results(round_num):
@@ -2348,6 +2384,145 @@ def admin_results(round_num):
     </div>
     ''', round_num=round_num, riders_450=riders_450, riders_250=riders_250, 
          location=location, race_type_info=race_type_info)
+
+@app.route('/admin/player-picks/<int:round_num>', methods=['GET', 'POST'])
+def admin_player_picks(round_num):
+    """Admin page to view and manually set or override any player's picks for a round."""
+    if session.get('username') != 'admin':
+        return redirect(url_for('login'))
+
+    round_info = get_round_info(round_num)
+    if not round_info:
+        flash('Invalid round')
+        return redirect(url_for('admin_results_selector'))
+
+    riders_450 = get_riders_by_class('450')
+    riders_250 = get_available_250_riders(round_num)
+    location = round_info['location'].split(',')[0]
+    race_type_info = get_race_type_display(round_info['race_type'])
+
+    conn = get_db_connection()
+    c = conn.cursor()
+
+    if request.method == 'POST':
+        action = request.form.get('action')
+        user_id = request.form.get('user_id')
+        try:
+            if action == 'save_picks':
+                rider_450 = request.form.get('rider_450')
+                rider_250 = request.form.get('rider_250')
+                if not rider_450 or not rider_250:
+                    flash('Both a 450 and 250 rider must be selected.')
+                elif rider_450 not in riders_450 or rider_250 not in riders_250:
+                    flash('Invalid rider selection.')
+                else:
+                    c.execute('DELETE FROM picks WHERE user_id = %s AND round_num = %s', (user_id, round_num))
+                    c.execute(
+                        'INSERT INTO picks (user_id, round_num, class, rider, auto_random) VALUES (%s, %s, %s, %s, %s)',
+                        (user_id, round_num, '450', rider_450, 0))
+                    c.execute(
+                        'INSERT INTO picks (user_id, round_num, class, rider, auto_random) VALUES (%s, %s, %s, %s, %s)',
+                        (user_id, round_num, '250', rider_250, 0))
+                    conn.commit()
+                    c.execute('SELECT username FROM users WHERE id = %s', (user_id,))
+                    u = c.fetchone()
+                    uname = u['username'] if u else f'User {user_id}'
+                    flash(f'Picks saved for {uname}: {rider_450} (450) / {rider_250} (250)')
+            elif action == 'clear_picks':
+                c.execute('SELECT username FROM users WHERE id = %s', (user_id,))
+                u = c.fetchone()
+                uname = u['username'] if u else f'User {user_id}'
+                c.execute('DELETE FROM picks WHERE user_id = %s AND round_num = %s', (user_id, round_num))
+                conn.commit()
+                flash(f'Picks cleared for {uname} \u2014 Round {round_num}')
+        except Exception as e:
+            conn.rollback()
+            flash(f'Error saving picks: {str(e)}')
+
+    c.execute('SELECT id, username FROM users ORDER BY username')
+    all_users = c.fetchall()
+    c.execute('SELECT user_id, class, rider, auto_random FROM picks WHERE round_num = %s', (round_num,))
+    all_picks_raw = c.fetchall()
+    conn.close()
+
+    picks_by_user = {}
+    for p in all_picks_raw:
+        uid = p['user_id']
+        if uid not in picks_by_user:
+            picks_by_user[uid] = {}
+        picks_by_user[uid][p['class']] = {'rider': p['rider'], 'auto_random': p['auto_random']}
+
+    PLAYER_PICKS_TEMPLATE = get_base_style() + (
+        '<style>'
+        '.player-row{background:#363636;border-radius:8px;border:1px solid #3d3d3d;margin-bottom:14px;overflow:hidden;}'
+        '.player-row-header{display:flex;align-items:center;gap:12px;padding:12px 18px;background:#3a3a3a;border-bottom:1px solid #4a4a4a;flex-wrap:wrap;}'
+        '.player-row-body{padding:14px 18px;}'
+        '.pick-grid{display:grid;grid-template-columns:1fr 1fr auto auto;gap:12px;align-items:end;}'
+        '@media(max-width:700px){.pick-grid{grid-template-columns:1fr 1fr;}}'
+        '.auto-badge{display:inline-block;background:#e74c3c20;color:#e74c3c;border:1px solid #e74c3c;border-radius:4px;font-size:0.75em;padding:1px 7px;font-weight:600;margin-left:6px;}'
+        '</style>'
+        '<div class="container">'
+        '<h1>&#9998; Player Picks &mdash; Round {{ round_num }} {{ location }}'
+        '<span class="race-type-badge" style="background:{{ race_type_info[\'color\'] }}20;color:{{ race_type_info[\'color\'] }};border:1px solid {{ race_type_info[\'color\'] }};">'
+        '{{ race_type_info[\'emoji\'] }} {{ race_type_info[\'name\'] }}</span></h1>'
+        '<p style="color:#b0b0b0;margin-bottom:20px;">'
+        'Set or override any player\'s picks for this round. Changes bypass the deadline and 3-round rule &mdash; use carefully.'
+        '</p>'
+        '{% with messages = get_flashed_messages() %}'
+        '{% if messages %}{% for msg in messages %}<div class="flash">{{ msg }}</div>{% endfor %}{% endif %}'
+        '{% endwith %}'
+        '{% for user in all_users %}'
+        '{% set uid = user[\'id\'] %}'
+        '{% set user_picks = picks_by_user.get(uid, {}) %}'
+        '{% set pick_450 = user_picks.get(\'450\', {}) %}'
+        '{% set pick_250 = user_picks.get(\'250\', {}) %}'
+        '<div class="player-row">'
+        '<div class="player-row-header">'
+        '<strong style="font-size:1.05em;">{{ user[\'username\'] }}</strong>'
+        '{% if pick_450 and pick_250 %}'
+        '<span style="color:#27ae60;font-size:0.9em;">&#10003; Picks submitted</span>'
+        '{% if pick_450.get(\'auto_random\') or pick_250.get(\'auto_random\') %}<span class="auto-badge">AUTO</span>{% endif %}'
+        '{% else %}<span style="color:#e74c3c;font-size:0.9em;">&#10007; No picks</span>{% endif %}'
+        '</div>'
+        '<div class="player-row-body">'
+        '{% if pick_450 or pick_250 %}'
+        '<p style="font-size:0.85em;color:#b0b0b0;margin-bottom:10px;">Current: '
+        '<strong style="color:#c9975b;">{{ pick_450.get(\'rider\', \'&mdash;\') }}</strong> (450) / '
+        '<strong style="color:#c9975b;">{{ pick_250.get(\'rider\', \'&mdash;\') }}</strong> (250)</p>'
+        '{% endif %}'
+        '<form method="post">'
+        '<input type="hidden" name="action" value="save_picks">'
+        '<input type="hidden" name="user_id" value="{{ uid }}">'
+        '<div class="pick-grid">'
+        '<div><label style="font-size:0.85em;"><strong>450 Rider</strong></label>'
+        '<select name="rider_450" style="margin-top:4px;">'
+        '{% for r in riders_450 %}<option value="{{ r }}" {% if pick_450.get(\'rider\')==r %}selected{% endif %}>{{ r }}</option>{% endfor %}'
+        '</select></div>'
+        '<div><label style="font-size:0.85em;"><strong>250 Rider</strong></label>'
+        '<select name="rider_250" style="margin-top:4px;">'
+        '{% for r in riders_250 %}<option value="{{ r }}" {% if pick_250.get(\'rider\')==r %}selected{% endif %}>{{ r }}</option>{% endfor %}'
+        '</select></div>'
+        '<div style="padding-top:22px;"><button type="submit" class="btn btn-small">Save</button></div>'
+        '<div style="padding-top:22px;">'
+        '{% if pick_450 or pick_250 %}'
+        '<form method="post" style="display:inline;" onsubmit="return confirm(\'Clear picks for {{ user[\'username\'] }} in Round {{ round_num }}?\');">'
+        '<input type="hidden" name="action" value="clear_picks">'
+        '<input type="hidden" name="user_id" value="{{ uid }}">'
+        '<button type="submit" class="btn btn-small btn-danger">Clear</button>'
+        '</form>'
+        '{% endif %}'
+        '</div>'
+        '</div></form></div></div>'
+        '{% endfor %}'
+        '<div style="margin-top:28px;"><a href="/admin/results-selector" class="link">&#8592; Back to Admin Hub</a></div>'
+        '</div>'
+    )
+
+    return render_template_string(PLAYER_PICKS_TEMPLATE,
+        round_num=round_num, location=location, race_type_info=race_type_info,
+        all_users=all_users, picks_by_user=picks_by_user,
+        riders_450=riders_450, riders_250=riders_250)
+
 
 @app.route('/admin/manage-users', methods=['GET', 'POST'])
 def admin_manage_users():
