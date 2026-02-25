@@ -124,7 +124,22 @@ def init_db():
     conn.commit()
     conn.close()
 
-init_db()
+# init_db() is called lazily on the first request (not at import time).
+# This prevents gunicorn worker timeouts on Render's free tier when
+# Supabase is slow to respond or resuming from a pause.
+_db_initialized = False
+
+@app.before_request
+def ensure_db_initialized():
+    global _db_initialized
+    if not _db_initialized:
+        try:
+            init_db()
+            _db_initialized = True
+        except Exception as e:
+            # Log the error but don't crash — the route handler will
+            # surface a proper error if the DB is genuinely unavailable.
+            app.logger.error(f'init_db failed: {e}')
 
 # ============================================================================
 # LEADERBOARD CACHE FUNCTIONS
