@@ -1,12 +1,9 @@
+
 from flask import Flask, request, redirect, url_for, render_template_string, session, flash, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 import psycopg2
 from psycopg2.extras import RealDictCursor
-from datetime import datetime, timedelta, timezone
-try:
-    from zoneinfo import ZoneInfo
-except ImportError:
-    from backports.zoneinfo import ZoneInfo
+from datetime import datetime, timedelta
 from bs4 import BeautifulSoup
 import requests
 import random
@@ -15,40 +12,20 @@ import csv
 import re
 from io import StringIO, BytesIO
 from zipfile import ZipFile
-
+ 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-key-change-in-production')
 DATABASE_URL = os.environ.get('DATABASE_URL')
-
+ 
 RACE_TYPES = {
     'supercross': {'name': 'Supercross', 'emoji': '🏟️', 'color': '#e74c3c'},
     'motocross': {'name': 'Motocross', 'emoji': '🏞️', 'color': '#27ae60'},
     'SMX': {'name': 'SuperMotocross', 'emoji': '🏁', 'color': '#f39c12'}
 }
-
-def get_location_timezone(location):
-    """
-    Return a ZoneInfo timezone for the given race location string.
-    Uses named timezones so DST is handled automatically.
-    """
-    if 'AZ' in location:
-        return ZoneInfo('America/Phoenix')          # No DST year-round
-    elif 'CA' in location or 'Seattle' in location or 'WA' in location:
-        return ZoneInfo('America/Los_Angeles')       # PST/PDT
-    elif 'CO' in location:
-        return ZoneInfo('America/Denver')            # MST/MDT
-    elif 'TX' in location:
-        return ZoneInfo('America/Chicago')           # CST/CDT
-    elif 'IN' in location:
-        return ZoneInfo('America/Indiana/Indianapolis')  # EST/EDT
-    elif 'FL' in location or 'NC' in location or 'GA' in location or 'SC' in location:
-        return ZoneInfo('America/New_York')          # EST/EDT
-    else:
-        return ZoneInfo('America/Los_Angeles')       # Default Pacific
-
+ 
 def get_db_connection():
     return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
-
+ 
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
@@ -123,28 +100,13 @@ def init_db():
     
     conn.commit()
     conn.close()
-
-# init_db() is called lazily on the first request (not at import time).
-# This prevents gunicorn worker timeouts on Render's free tier when
-# Supabase is slow to respond or resuming from a pause.
-_db_initialized = False
-
-@app.before_request
-def ensure_db_initialized():
-    global _db_initialized
-    if not _db_initialized:
-        try:
-            init_db()
-            _db_initialized = True
-        except Exception as e:
-            # Log the error but don't crash — the route handler will
-            # surface a proper error if the DB is genuinely unavailable.
-            app.logger.error(f'init_db failed: {e}')
-
+ 
+init_db()
+ 
 # ============================================================================
 # LEADERBOARD CACHE FUNCTIONS
 # ============================================================================
-
+ 
 def recalculate_leaderboard():
     """
     Recalculate the entire leaderboard cache. Called by admin only.
@@ -163,14 +125,29 @@ def recalculate_leaderboard():
     schedule = c.fetchall()
     round_race_types = {s['round']: s['race_type'] for s in schedule}
     
-    # Get all rounds that have passed deadline
+    # Get all rounds that have passed deadline (calculate inline, no extra DB calls)
+    from datetime import timezone
     now_utc = datetime.now(timezone.utc)
-
+    
     visible_rounds = []
     for s in schedule:
-        tz = get_location_timezone(s['location'])
-        deadline = datetime.combine(s['race_date'], datetime.min.time(), tzinfo=tz)
-        if now_utc > deadline:
+        # Calculate deadline inline instead of calling get_deadline_for_round
+        location = s['location']
+        if 'CA' in location or 'Seattle' in location:
+            tz_offset = -8
+        elif 'TX' in location or 'IN' in location:
+            tz_offset = -6
+        elif 'FL' in location or 'NC' in location:
+            tz_offset = -5
+        elif 'AZ' in location or 'CO' in location:
+            tz_offset = -7
+        else:
+            tz_offset = -8
+        
+        deadline_local = datetime.combine(s['race_date'], datetime.min.time())
+        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
+        
+        if deadline and now_utc > deadline:
             visible_rounds.append(s['round'])
     
     # Clear existing cache
@@ -181,6 +158,9 @@ def recalculate_leaderboard():
     c.execute('''SELECT user_id, round_num, class, rider, auto_random 
                  FROM picks WHERE round_num = ANY(%s)''', (visible_rounds,))
     all_picks = c.fetchall()
+    
+    # Get all unique riders for duplicate last name detection
+    all_rider_names = list(set(p['rider'] for p in all_picks if p['rider']))
     
     # Index picks by (user_id, round_num, class)
     picks_index = {}
@@ -214,14 +194,14 @@ def recalculate_leaderboard():
                 pick = picks_index.get(pick_key)
                 
                 rider = None
-                rider_initials = '—'
+                rider_short_name = '—'
                 position = None
                 points = 0
                 auto_random = False
                 
                 if pick:
                     rider = pick['rider']
-                    rider_initials = get_initials(rider) if rider else '—'
+                    rider_short_name = get_rider_short_name(rider, all_rider_names) if rider else '—'
                     auto_random = bool(pick['auto_random'])
                     
                     # Look up result
@@ -234,7 +214,7 @@ def recalculate_leaderboard():
                         user_totals[user_id]['overall'] += points
                         user_totals[user_id][race_type] += points
                 
-                # Insert into cache
+                # Insert into cache (rider_initials column now stores short name)
                 c.execute('''INSERT INTO user_round_points 
                              (user_id, username, round_num, race_type, class, rider, rider_initials, position, points, auto_random)
                              VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -243,7 +223,7 @@ def recalculate_leaderboard():
                                            rider = EXCLUDED.rider, rider_initials = EXCLUDED.rider_initials,
                                            position = EXCLUDED.position, points = EXCLUDED.points,
                                            auto_random = EXCLUDED.auto_random''',
-                          (user_id, username, rnd, race_type, cls, rider, rider_initials, position, points, auto_random))
+                          (user_id, username, rnd, race_type, cls, rider, rider_short_name, position, points, auto_random))
     
     # Calculate ranks and insert totals for each view type
     for view_type in ['overall', 'supercross', 'motocross', 'SMX']:
@@ -272,7 +252,7 @@ def recalculate_leaderboard():
     conn.close()
     
     return len(users), len(visible_rounds)
-
+ 
 def get_leaderboard_last_updated():
     """Get when the leaderboard was last recalculated"""
     conn = get_db_connection()
@@ -281,7 +261,7 @@ def get_leaderboard_last_updated():
     result = c.fetchone()
     conn.close()
     return result
-
+ 
 def get_schedule():
     conn = get_db_connection()
     c = conn.cursor()
@@ -289,7 +269,7 @@ def get_schedule():
     schedule = c.fetchall()
     conn.close()
     return schedule
-
+ 
 def get_riders_by_class(rider_class):
     conn = get_db_connection()
     c = conn.cursor()
@@ -297,7 +277,7 @@ def get_riders_by_class(rider_class):
     riders = [r['name'] for r in c.fetchall()]
     conn.close()
     return riders
-
+ 
 def get_available_250_riders(round_num):
     conn = get_db_connection()
     c = conn.cursor()
@@ -313,42 +293,28 @@ def get_available_250_riders(round_num):
         return get_riders_by_class('250_East')
     else:
         return get_riders_by_class('250_West') + get_riders_by_class('250_East')
-
+ 
 def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
     """
     Get top 10 riders by championship points for smart auto-pick.
     Only considers riders who have actually scored points in previous rounds.
     Falls back to random selection from riders with results if top 10 are all excluded.
-    OPTIMIZED: Uses single DB connection for all queries.
+    OPTIMIZED: Uses single query instead of one per rider.
     """
     conn = get_db_connection()
     c = conn.cursor()
-
-    # Get available riders using the same connection (avoids extra connections)
+    
+    # Get all riders for the class (these functions open their own connections, but are fast)
     if rider_class == '250':
-        c.execute('SELECT class_250 FROM schedule WHERE round = %s', (round_num,))
-        result = c.fetchone()
-        if not result:
-            conn.close()
-            return []
-        class_250 = result['class_250']
-        if class_250 == 'West':
-            c.execute('SELECT name FROM riders WHERE class = %s AND active = TRUE ORDER BY name', ('250_West',))
-        elif class_250 == 'East':
-            c.execute('SELECT name FROM riders WHERE class = %s AND active = TRUE ORDER BY name', ('250_East',))
-        else:
-            c.execute('SELECT name FROM riders WHERE class IN (%s, %s) AND active = TRUE ORDER BY name',
-                      ('250_West', '250_East'))
-        available_riders = [r['name'] for r in c.fetchall()]
+        available_riders = get_available_250_riders(round_num)
     else:
-        c.execute('SELECT name FROM riders WHERE class = %s AND active = TRUE ORDER BY name', ('450',))
-        available_riders = [r['name'] for r in c.fetchall()]
-
+        available_riders = get_riders_by_class('450')
+    
     if not available_riders:
         conn.close()
         return []
-
-    # Single query to get points for ALL riders at once
+    
+    # OPTIMIZED: Single query to get points for ALL riders at once
     c.execute('''SELECT rider,
                         SUM(CASE 
                             WHEN position = 1 THEN 25
@@ -362,39 +328,40 @@ def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
                  FROM results 
                  WHERE rider = ANY(%s) AND round_num < %s
                  GROUP BY rider''', (available_riders, round_num))
-
+    
     results = c.fetchall()
     conn.close()
-
+    
     # Build lookup of rider points and race counts
     rider_points = {r['rider']: r['total_points'] or 0 for r in results}
     riders_with_results = [r['rider'] for r in results if r['race_count'] > 0]
-
+    
     # Sort riders WHO HAVE RESULTS by points (descending), then by name for consistency
     riders_with_points = [(rider, rider_points.get(rider, 0)) for rider in riders_with_results]
     sorted_riders = sorted(riders_with_points, key=lambda x: (-x[1], x[0]))
-
+    
     # Get top 10 riders who have actually scored points (points > 0)
     top_riders_with_points = [rider for rider, points in sorted_riders if points > 0][:10]
-
+    
     # Filter out excluded riders (from 3-round rule)
     if exclude_riders:
         top_riders_with_points = [r for r in top_riders_with_points if r not in exclude_riders]
-
+    
     # If we have riders with points after filtering, use them
     if top_riders_with_points:
         return top_riders_with_points
-
+    
     # Fallback 1: Use riders who have appeared in results (even with 0 points from DNFs etc)
     fallback_riders = [r for r in riders_with_results if r not in (exclude_riders or [])]
     if fallback_riders:
+        # Sort by points descending for better selection
         fallback_riders = sorted(fallback_riders, key=lambda r: rider_points.get(r, 0), reverse=True)
         return fallback_riders[:10] if len(fallback_riders) > 10 else fallback_riders
-
+    
     # Fallback 2: If no riders have results yet (very early season), use all available riders
     fallback_all = [r for r in available_riders if r not in (exclude_riders or [])]
     return fallback_all
-
+ 
 def get_points(position):
     if position == 1: return 25
     elif position == 2: return 22
@@ -402,29 +369,67 @@ def get_points(position):
     elif position == 4: return 18
     elif position >= 5 and position <= 20: return 22 - position
     else: return 0
-
+ 
 def get_initials(name):
     parts = name.split()
     return ''.join(p[0].upper() for p in parts if p)
-
+ 
+def get_rider_short_name(name, all_riders=None):
+    """
+    Get rider's short name for display.
+    Returns last name, or F.Lastname if there are other riders with same last name.
+    """
+    if not name:
+        return '—'
+    parts = name.split()
+    if len(parts) < 2:
+        return name
+    
+    first_initial = parts[0][0].upper()
+    last_name = parts[-1]
+    
+    # If we have a list of all riders, check for duplicate last names
+    if all_riders:
+        same_last = [r for r in all_riders if r != name and r.split()[-1] == last_name]
+        if same_last:
+            return f"{first_initial}.{last_name}"
+    
+    return last_name
+ 
 def get_current_round():
     """Get the current active round (first round whose deadline hasn't passed)"""
+    from datetime import timezone
     now_utc = datetime.now(timezone.utc)
-
+    
+    # Get schedule with all data needed to calculate deadlines
     conn = get_db_connection()
     c = conn.cursor()
     c.execute('SELECT round, race_date, location FROM schedule ORDER BY round')
     schedule = c.fetchall()
     conn.close()
-
+    
     for s in schedule:
-        tz = get_location_timezone(s['location'])
-        deadline = datetime.combine(s['race_date'], datetime.min.time(), tzinfo=tz)
+        # Calculate deadline inline (no extra DB calls)
+        location = s['location']
+        if 'CA' in location or 'Seattle' in location:
+            tz_offset = -8
+        elif 'TX' in location or 'IN' in location:
+            tz_offset = -6
+        elif 'FL' in location or 'NC' in location:
+            tz_offset = -5
+        elif 'AZ' in location or 'CO' in location:
+            tz_offset = -7
+        else:
+            tz_offset = -8
+        
+        deadline_local = datetime.combine(s['race_date'], datetime.min.time())
+        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
+        
         if now_utc < deadline:
             return s['round']
-
+    
     return len(schedule) + 1 if schedule else 1
-
+ 
 def get_round_info(round_num):
     conn = get_db_connection()
     c = conn.cursor()
@@ -432,29 +437,41 @@ def get_round_info(round_num):
     result = c.fetchone()
     conn.close()
     return result
-
+ 
 def get_deadline_for_round(round_num):
     round_info = get_round_info(round_num)
     if not round_info:
         return None
     race_date = round_info['race_date']
     location = round_info['location']
-    tz = get_location_timezone(location)
-    return datetime.combine(race_date, datetime.min.time(), tzinfo=tz)
-
+    if 'CA' in location or 'Seattle' in location:
+        tz_offset = -8
+    elif 'TX' in location or 'IN' in location:
+        tz_offset = -6
+    elif 'FL' in location or 'NC' in location:
+        tz_offset = -5
+    elif 'AZ' in location or 'CO' in location:
+        tz_offset = -7
+    else:
+        tz_offset = -8
+    deadline_local = datetime.combine(race_date, datetime.min.time())
+    from datetime import timezone as tz
+    deadline_utc = deadline_local.replace(tzinfo=tz(timedelta(hours=tz_offset)))
+    return deadline_utc
+ 
 def get_round_location(round_num):
     round_info = get_round_info(round_num)
     if round_info:
         return round_info['location'].split(',')[0]
     return ""
-
+ 
 def get_race_type_display(race_type):
     return RACE_TYPES.get(race_type, {'name': race_type, 'emoji': '🏍️', 'color': '#c9975b'})
-
+ 
 # ============================================================================
 # AUTO-FETCH RESULTS FROM SUPERMOTOCROSS.COM
 # ============================================================================
-
+ 
 def get_event_id(round_num):
     """
     Get event ID from supermotocross.com based on round information.
@@ -524,7 +541,7 @@ def get_event_id(round_num):
     except Exception as e:
         print(f"Error fetching event ID: {e}")
         return None
-
+ 
 def get_overall_url(event_id, rider_class):
     """
     Get the URL for overall/combined results for a specific class.
@@ -571,7 +588,7 @@ def get_overall_url(event_id, rider_class):
     except Exception as e:
         print(f"Error getting overall URL: {e}")
         return None
-
+ 
 def parse_results(url, rider_class, round_num):
     """
     Parse results from a given URL and return a dictionary of {rider_name: position}.
@@ -669,7 +686,7 @@ def parse_results(url, rider_class, round_num):
     except Exception as e:
         print(f"Error parsing results: {e}")
         return {}
-
+ 
 def get_base_style():
     return '''
     <style>
@@ -922,7 +939,7 @@ def get_base_style():
         }
     </style>
     '''
-
+ 
 @app.route('/', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -965,7 +982,7 @@ def login():
         </div>
     </div>
     ''')
-
+ 
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -1009,7 +1026,7 @@ def register():
         </div>
     </div>
     ''')
-
+ 
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
     if request.method == 'POST':
@@ -1072,7 +1089,7 @@ def forgot_password():
         </div>
     </div>
     ''')
-
+ 
 @app.route('/change-password', methods=['GET', 'POST'])
 def change_password():
     if 'user_id' not in session:
@@ -1131,7 +1148,7 @@ def change_password():
         </div>
     </div>
     ''')
-
+ 
 @app.route('/dashboard')
 def dashboard():
     if 'user_id' not in session:
@@ -1196,7 +1213,7 @@ def dashboard():
         </div>
     </div>
     ''', username=session['username'], current_round=current_round, location=location, race_type_info=race_type_info)
-
+ 
 @app.route('/pick/<int:round_num>', methods=['GET', 'POST'])
 def pick(round_num):
     if 'user_id' not in session:
@@ -1208,6 +1225,7 @@ def pick(round_num):
     deadline = get_deadline_for_round(round_num)
     deadline_passed = False
     if deadline:
+        from datetime import timezone
         now_utc = datetime.now(timezone.utc)
         deadline_passed = now_utc > deadline
     riders_450 = get_riders_by_class('450')
@@ -1241,14 +1259,18 @@ def pick(round_num):
         elif rider_450 not in riders_450 or rider_250 not in riders_250:
             flash('Invalid rider')
         else:
-            # 3-round rule: check ±2 rounds in both directions (handles out-of-order admin ops)
-            nearby_rounds = [r for r in [round_num-2, round_num-1, round_num+1, round_num+2] if r > 0]
-            c.execute('''SELECT rider FROM picks WHERE user_id = %s AND class = %s AND round_num = ANY(%s)''',
+            # Check 3-round rule in both directions (handles out-of-order admin edits)
+            nearby_rounds = [round_num-2, round_num-1, round_num+1, round_num+2]
+            nearby_rounds = [r for r in nearby_rounds if r > 0]
+            
+            c.execute('''SELECT rider FROM picks 
+                        WHERE user_id = %s AND class = %s AND round_num = ANY(%s)''',
                       (session['user_id'], '450', nearby_rounds))
             if rider_450 in [r['rider'] for r in c.fetchall()]:
                 flash('Cannot pick the same 450 rider within 3 rounds')
             else:
-                c.execute('''SELECT rider FROM picks WHERE user_id = %s AND class = %s AND round_num = ANY(%s)''',
+                c.execute('''SELECT rider FROM picks 
+                            WHERE user_id = %s AND class = %s AND round_num = ANY(%s)''',
                           (session['user_id'], '250', nearby_rounds))
                 if rider_250 in [r['rider'] for r in c.fetchall()]:
                     flash('Cannot pick the same 250 rider within 3 rounds')
@@ -1460,7 +1482,7 @@ def pick(round_num):
          existing_picks=existing_picks, message=message, deadline_passed=deadline_passed,
          all_players_picks=all_players_picks, location=location, session=session, 
          deadline_iso=deadline_iso, race_type_info=race_type_info, class_250_type=class_250_type)
-
+ 
 @app.route('/leaderboard')
 def leaderboard():
     if 'user_id' not in session:
@@ -1473,7 +1495,8 @@ def leaderboard():
     # ============================================================================
     # SIMPLE CACHE-ONLY LEADERBOARD - Fast, relies on admin to recalculate
     # ============================================================================
-
+    
+    from datetime import timezone
     now_utc = datetime.now(timezone.utc)
     
     # Query 1: Get totals from cache (pre-calculated, pre-ranked)
@@ -1496,13 +1519,27 @@ def leaderboard():
     # Calculate visible rounds (deadline passed)
     visible_rounds = []
     for s in schedule:
-        tz = get_location_timezone(s['location'])
-        deadline = datetime.combine(s['race_date'], datetime.min.time(), tzinfo=tz)
-
-        if now_utc > deadline:
+        # Calculate deadline inline
+        race_date = s['race_date']
+        location = s['location']
+        if 'CA' in location or 'Seattle' in location:
+            tz_offset = -8
+        elif 'TX' in location or 'IN' in location:
+            tz_offset = -6
+        elif 'FL' in location or 'NC' in location:
+            tz_offset = -5
+        elif 'AZ' in location or 'CO' in location:
+            tz_offset = -7
+        else:
+            tz_offset = -8
+        
+        deadline_local = datetime.combine(race_date, datetime.min.time())
+        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
+        
+        if deadline and now_utc > deadline:
             round_info = dict(s)
             round_info['has_results'] = results_counts.get(s['round'], 0) > 0
-            round_info['short_location'] = s['location'].split(',')[0]
+            round_info['short_location'] = location.split(',')[0]
             
             if view == 'overall' or s['race_type'] == view:
                 visible_rounds.append(round_info)
@@ -1624,6 +1661,7 @@ def leaderboard():
                         <th style="text-align: center;">Rank</th>
                         <th>Player</th>
                         <th style="text-align: center;">Total Points</th>
+                        {% if view != 'overall' %}
                         {% for rnd_info in visible_rounds %}
                         <th style="text-align: center; {% if not rnd_info['has_results'] %}background: #f39c12;{% endif %}">
                             R{{ rnd_info['round'] }} {{ rnd_info['short_location'] }}<br>
@@ -1633,6 +1671,7 @@ def leaderboard():
                             {% endif %}
                         </th>
                         {% endfor %}
+                        {% endif %}
                     </tr>
                 </thead>
                 <tbody>
@@ -1649,6 +1688,7 @@ def leaderboard():
                         <td style="text-align: center; font-size: 1.4em; font-weight: bold; color: #c9975b;">
                             {{ player.total }}
                         </td>
+                        {% if view != 'overall' %}
                         {% for rnd_info in visible_rounds %}
                         <td style="text-align: center; font-size: 0.9em; {% if not rnd_info['has_results'] %}background: #3a3a3a;{% endif %}">
                             <div style="margin-bottom: 3px;">
@@ -1671,15 +1711,22 @@ def leaderboard():
                             {% endif %}
                         </td>
                         {% endfor %}
+                        {% endif %}
                     </tr>
                     {% endfor %}
                 </tbody>
             </table>
         </div>
+        {% if view != 'overall' %}
         <p style="margin-top: 20px; color: #b0b0b0; font-size: 0.9em;">
             <span class="random-pick">Red text</span> = auto-pick (missed deadline) | 
             <span style="color: #f39c12;">Orange header</span> = picks visible, results pending
         </p>
+        {% else %}
+        <p style="margin-top: 20px; color: #b0b0b0; font-size: 0.9em;">
+            Select a tab above to see round-by-round picks and results.
+        </p>
+        {% endif %}
         {% endif %}
         
         <div style="margin-top: 30px;">
@@ -1689,7 +1736,7 @@ def leaderboard():
     ''', player_data=player_data, visible_rounds=visible_rounds, session=session, 
          get_race_type_display=get_race_type_display, 
          view=view, cache_empty=cache_empty, last_updated=last_updated)
-
+ 
 @app.route('/rules')
 def rules():
     if 'user_id' not in session:
@@ -1758,7 +1805,7 @@ def rules():
         </div>
     </div>
     ''')
-
+ 
 @app.route('/admin/schedule', methods=['GET', 'POST'])
 def admin_schedule():
     if session.get('username') != 'admin':
@@ -1779,24 +1826,12 @@ def admin_schedule():
                 conn.commit()
                 flash('Round added successfully!')
             except psycopg2.IntegrityError:
-                conn.rollback()
-                flash('Round number already exists — each round number must be unique.')
-            except Exception as e:
-                conn.rollback()
-                flash(f'Error adding round: {str(e)}')
+                flash('Round number already exists')
         elif action == 'delete':
             round_id = request.form.get('round_id')
-            # Get round number first so we can cascade-delete picks and results
-            c.execute('SELECT round FROM schedule WHERE id = %s', (round_id,))
-            sched_row = c.fetchone()
-            if sched_row:
-                round_num_to_delete = sched_row['round']
-                c.execute('DELETE FROM results WHERE round_num = %s', (round_num_to_delete,))
-                c.execute('DELETE FROM picks WHERE round_num = %s', (round_num_to_delete,))
-                c.execute('DELETE FROM user_round_points WHERE round_num = %s', (round_num_to_delete,))
             c.execute('DELETE FROM schedule WHERE id = %s', (round_id,))
             conn.commit()
-            flash('Round deleted successfully (picks, results, and cache entries removed)!')
+            flash('Round deleted successfully!')
     c.execute('SELECT * FROM schedule ORDER BY round')
     schedule = c.fetchall()
     conn.close()
@@ -1889,7 +1924,7 @@ def admin_schedule():
         </div>
     </div>
     ''', schedule=schedule, get_race_type_display=get_race_type_display)
-
+ 
 @app.route('/admin/riders', methods=['GET', 'POST'])
 def admin_riders():
     if session.get('username') != 'admin':
@@ -1906,11 +1941,7 @@ def admin_riders():
                 conn.commit()
                 flash(f'Rider {name} added successfully!')
             except psycopg2.IntegrityError:
-                conn.rollback()
-                flash('A rider with that name already exists.')
-            except Exception as e:
-                conn.rollback()
-                flash(f'Error adding rider: {str(e)}')
+                flash('Rider already exists')
         elif action == 'toggle':
             rider_id = request.form.get('rider_id')
             c.execute('UPDATE riders SET active = NOT active WHERE id = %s', (rider_id,))
@@ -2007,7 +2038,7 @@ def admin_riders():
         </div>
     </div>
     ''', riders=riders)
-
+ 
 @app.route('/admin/fetch-results/<int:round_num>')
 def fetch_results(round_num):
     if session.get('username') != 'admin':
@@ -2029,40 +2060,35 @@ def fetch_results(round_num):
     results_450 = {}
     results_250 = {}
     fetch_errors = []
-
-    try:
-        if event_id:
-            # Try to fetch results for each class
-            for cls in ['450', '250']:
-                try:
-                    url = get_overall_url(event_id, cls)
-                    if url:
-                        results = parse_results(url, cls, round_num)
-                        if results:
-                            if cls == '450':
-                                results_450 = results
-                            else:
-                                results_250 = results
-
-                            # Save results to database
-                            for rider, pos in results.items():
-                                c.execute('DELETE FROM results WHERE round_num = %s AND class = %s AND rider = %s',
-                                          (round_num, cls, rider))
-                                c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s)',
-                                          (round_num, cls, rider, pos))
-                    else:
-                        fetch_errors.append(f'Could not find results URL for {cls} class')
-                except Exception as e:
-                    fetch_errors.append(f'Error fetching {cls} results: {str(e)}')
-        else:
-            fetch_errors.append(f'Could not find event on supermotocross.com for {location}')
-
-        conn.commit()
-    except Exception as e:
-        conn.rollback()
-        fetch_errors.append(f'Database error: {str(e)}')
-    finally:
-        conn.close()
+    
+    if event_id:
+        # Try to fetch results for each class
+        for cls in ['450', '250']:
+            try:
+                url = get_overall_url(event_id, cls)
+                if url:
+                    results = parse_results(url, cls, round_num)
+                    if results:
+                        if cls == '450':
+                            results_450 = results
+                        else:
+                            results_250 = results
+                        
+                        # Save results to database
+                        for rider, pos in results.items():
+                            c.execute('DELETE FROM results WHERE round_num = %s AND class = %s AND rider = %s',
+                                      (round_num, cls, rider))
+                            c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s)',
+                                      (round_num, cls, rider, pos))
+                else:
+                    fetch_errors.append(f'Could not find results URL for {cls} class')
+            except Exception as e:
+                fetch_errors.append(f'Error fetching {cls} results: {str(e)}')
+    else:
+        fetch_errors.append(f'Could not find event on supermotocross.com for {location}')
+    
+    conn.commit()
+    conn.close()
     
     # Provide detailed feedback
     total_results = len(results_450) + len(results_250)
@@ -2078,7 +2104,7 @@ def fetch_results(round_num):
             flash(f'Debug: {error}')
     
     return redirect(url_for('admin_results_selector'))
-
+ 
 @app.route('/admin/assign-autopicks/<int:round_num>')
 def admin_assign_autopicks(round_num):
     if session.get('username') != 'admin':
@@ -2091,6 +2117,7 @@ def admin_assign_autopicks(round_num):
     
     # Check if deadline has passed
     deadline = get_deadline_for_round(round_num)
+    from datetime import timezone
     now_utc = datetime.now(timezone.utc)
     
     if deadline and now_utc <= deadline:
@@ -2156,7 +2183,7 @@ def admin_assign_autopicks(round_num):
     
     flash(f'Auto-picks assigned to {assigned_count} user(s) who missed Round {round_num} deadline')
     return redirect(url_for('admin_results_selector'))
-
+ 
 @app.route('/admin/recalculate-leaderboard')
 def admin_recalculate_leaderboard():
     """Admin-only route to recalculate the entire leaderboard cache"""
@@ -2170,155 +2197,155 @@ def admin_recalculate_leaderboard():
         flash(f'⚠️ Error recalculating leaderboard: {str(e)}')
     
     return redirect(url_for('admin_results_selector'))
-
+ 
 @app.route('/admin/results-selector')
 def admin_results_selector():
     if session.get('username') != 'admin':
         return redirect(url_for('login'))
-
     schedule = get_schedule()
+    
+    # Get current time for checking deadlines
+    from datetime import timezone
     now_utc = datetime.now(timezone.utc)
-
+    
+    # Get last leaderboard update time
+    last_updated = get_leaderboard_last_updated()
+    
+    # Get counts for each round
     conn = get_db_connection()
     c = conn.cursor()
-    c.execute('SELECT round_num, COUNT(*) as cnt FROM results GROUP BY round_num')
-    results_counts = {row['round_num']: row['cnt'] for row in c.fetchall()}
-    c.execute('SELECT round_num, COUNT(*) as cnt FROM picks GROUP BY round_num')
-    picks_counts = {row['round_num']: row['cnt'] for row in c.fetchall()}
+    
+    # Get results counts per round
+    c.execute('SELECT round_num, COUNT(*) as count FROM results GROUP BY round_num')
+    results_counts = {row['round_num']: row['count'] for row in c.fetchall()}
+    
+    # Get picks counts per round (count users with picks, not individual picks)
+    c.execute('''SELECT round_num, COUNT(DISTINCT user_id) as count FROM picks GROUP BY round_num''')
+    picks_counts = {row['round_num']: row['count'] for row in c.fetchall()}
+    
+    # Get total user count
+    c.execute('SELECT COUNT(*) as count FROM users')
+    total_users = c.fetchone()['count']
+    
     conn.close()
-
-    schedule_with_status = []
-    for s in schedule:
-        tz = get_location_timezone(s['location'])
-        deadline = datetime.combine(s['race_date'], datetime.min.time(), tzinfo=tz)
-        s_dict = dict(s)
-        s_dict['deadline_passed'] = now_utc > deadline
-        s_dict['has_results'] = results_counts.get(s['round'], 0) > 0
-        s_dict['picks_count'] = picks_counts.get(s['round'], 0)
-        s_dict['results_count'] = results_counts.get(s['round'], 0)
-        schedule_with_status.append(s_dict)
-
-    last_updated = get_leaderboard_last_updated()
-    upcoming = [s for s in schedule_with_status if not s['deadline_passed']]
-    past = [s for s in schedule_with_status if s['deadline_passed']]
-
-    return render_template_string(get_base_style() + """
-    <style>
-        .hub-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 15px; margin-bottom: 30px; }
-        @media (max-width: 700px) { .hub-grid { grid-template-columns: 1fr; } }
-        .hub-stat { background: #363636; border-radius: 8px; padding: 18px 22px; border: 1px solid #3d3d3d; text-align: center; }
-        .hub-stat .stat-num { font-size: 2.2em; font-weight: 700; color: #c9975b; }
-        .hub-stat .stat-label { color: #b0b0b0; font-size: 0.9em; margin-top: 4px; }
-        .round-card { background: #363636; border-radius: 8px; border: 1px solid #3d3d3d; margin-bottom: 12px; overflow: hidden; }
-        .round-card-header { display: flex; align-items: center; gap: 14px; padding: 13px 18px; background: #3a3a3a; border-bottom: 1px solid #4a4a4a; flex-wrap: wrap; }
-        .round-num-badge { background: #c9975b; color: #1a1a1a; font-weight: 700; border-radius: 6px; padding: 4px 10px; white-space: nowrap; }
-        .round-card-body { padding: 12px 18px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 10px; }
-        .round-meta { display: flex; gap: 18px; flex-wrap: wrap; }
-        .round-meta-item { font-size: 0.85em; color: #b0b0b0; }
-        .round-meta-item strong { color: #e0e0e0; }
-        .round-actions { display: flex; gap: 8px; flex-wrap: wrap; }
-        .section-divider { border: none; border-top: 2px solid #4a4a4a; margin: 28px 0 18px; }
-        .lb-card { background: #2a4a2a; border-radius: 8px; padding: 18px 22px; border: 1px solid #3a6a3a; margin-bottom: 26px; display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: 12px; }
-    </style>
+    
+    return render_template_string(get_base_style() + '''
     <div class="container">
-        <h1>&#128295; Admin Hub</h1>
+        <h1>🔧 Admin - Rounds Management</h1>
         {% with messages = get_flashed_messages() %}
-            {% if messages %}{% for msg in messages %}<div class="flash">{{ msg }}</div>{% endfor %}{% endif %}
+            {% if messages %}
+                {% for message in messages %}
+                    <div class="flash">{{ message }}</div>
+                {% endfor %}
+            {% endif %}
         {% endwith %}
-
-        <div style="display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 22px;">
-            <a href="/admin/schedule" class="btn btn-small">&#128197; Schedule</a>
-            <a href="/admin/riders" class="btn btn-small">Riders</a>
-            <a href="/admin/manage-users" class="btn btn-small">&#128101; Users</a>
-            <a href="/admin/export" class="btn btn-small">Export DB</a>
-        </div>
-
-        <div class="lb-card">
-            <div>
-                <h3 style="margin: 0; color: #27ae60;">&#128202; Leaderboard Cache</h3>
-                {% if last_updated %}
-                <p style="color: #888; font-size: 0.85em; margin: 5px 0 0;">Last updated: {{ last_updated['updated_at'].strftime('%b %d, %Y at %I:%M %p') }} UTC</p>
-                {% else %}
-                <p style="color: #f39c12; font-size: 0.85em; margin: 5px 0 0;">Never calculated</p>
-                {% endif %}
-            </div>
-            <a href="/admin/recalculate-leaderboard" class="btn" style="background: #27ae60;"
-               onclick="this.innerHTML='Calculating...'; this.style.pointerEvents='none';">
-               &#128260; Recalculate Leaderboard
+        
+        <!-- LEADERBOARD RECALCULATION SECTION -->
+        <div class="card" style="background: #2a4a2a; border-left-color: #27ae60; margin-bottom: 20px;">
+            <h3 style="margin-top: 0; color: #27ae60;">📊 Leaderboard Cache</h3>
+            <p style="color: #b0b0b0; margin-bottom: 15px;">
+                The leaderboard is cached for fast loading. After entering results or assigning auto-picks, 
+                click the button below to update the leaderboard.
+            </p>
+            {% if last_updated %}
+            <p style="color: #888; font-size: 0.9em; margin-bottom: 15px;">
+                Last updated: {{ last_updated['updated_at'].strftime('%b %d, %Y at %I:%M %p') }} UTC
+            </p>
+            {% else %}
+            <p style="color: #f39c12; font-size: 0.9em; margin-bottom: 15px;">
+                ⚠️ Leaderboard has never been calculated. Click below to initialize.
+            </p>
+            {% endif %}
+            <a href="/admin/recalculate-leaderboard" class="btn" 
+               style="background: #27ae60;"
+               onclick="this.innerHTML='⏳ Calculating...'; this.style.pointerEvents='none';">
+               🔄 Recalculate Leaderboard
             </a>
         </div>
-
-        <div class="hub-grid">
-            <div class="hub-stat"><div class="stat-num">{{ past|length }}</div><div class="stat-label">Rounds Completed</div></div>
-            <div class="hub-stat"><div class="stat-num">{{ upcoming|length }}</div><div class="stat-label">Rounds Upcoming</div></div>
+        
+        <div class="card">
+            <h3 style="margin-top: 0;">Manage Rounds</h3>
+            <p style="color: #b0b0b0; margin-bottom: 15px;">
+                Click on a round to manage results and player picks.
+            </p>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Round</th>
+                        <th>Date</th>
+                        <th>Location</th>
+                        <th>Type</th>
+                        <th>Status</th>
+                        <th>Results</th>
+                        <th>Picks</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for s in schedule %}
+                    {% set deadline = get_deadline_for_round(s['round']) %}
+                    {% set deadline_passed = deadline and now_utc > deadline %}
+                    {% set result_count = results_counts.get(s['round'], 0) %}
+                    {% set pick_count = picks_counts.get(s['round'], 0) %}
+                    <tr>
+                        <td><strong>{{ s['round'] }}</strong></td>
+                        <td>{{ s['race_date'].strftime('%b %d') }}</td>
+                        <td>{{ s['location'].split(',')[0] }}</td>
+                        <td>
+                            <span style="color: {{ get_race_type_display(s['race_type'])['color'] }};">
+                                {{ get_race_type_display(s['race_type'])['emoji'] }}
+                            </span>
+                        </td>
+                        <td>
+                            {% if deadline_passed %}
+                                <span style="color: #e74c3c;">Locked</span>
+                            {% else %}
+                                <span style="color: #27ae60;">Open</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if result_count > 0 %}
+                                <span style="color: #27ae60;">✓ {{ result_count }}</span>
+                            {% else %}
+                                <span style="color: #999;">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if pick_count > 0 %}
+                                <span style="{% if pick_count < total_users %}color: #f39c12;{% else %}color: #27ae60;{% endif %}">
+                                    {{ pick_count }}/{{ total_users }}
+                                </span>
+                            {% else %}
+                                <span style="color: #999;">0/{{ total_users }}</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <a href="/admin/{{ s['round'] }}" class="btn btn-small">Manage</a>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
         </div>
-
-        {% if upcoming %}
-        <h3 style="color: #27ae60; margin-bottom: 10px;">&#10003; Open for Picks</h3>
-        {% for s in upcoming %}
-        <div class="round-card">
-            <div class="round-card-header">
-                <span class="round-num-badge">R{{ s['round'] }}</span>
-                <span style="font-weight:600;">{{ s['location'] }}</span>
-                <span class="race-type-badge" style="background:{{ get_race_type_display(s['race_type'])['color'] }}20;color:{{ get_race_type_display(s['race_type'])['color'] }};border:1px solid {{ get_race_type_display(s['race_type'])['color'] }};">
-                    {{ get_race_type_display(s['race_type'])['emoji'] }} {{ get_race_type_display(s['race_type'])['name'] }}
-                </span>
-                <span style="color:#27ae60;font-size:0.9em;margin-left:auto;">{{ s['race_date'].strftime('%b %d, %Y') }}</span>
-            </div>
-            <div class="round-card-body">
-                <div class="round-meta">
-                    <div class="round-meta-item">250: <strong>{{ s['class_250'] }}</strong></div>
-                    <div class="round-meta-item">Picks in: <strong>{{ s['picks_count'] }}</strong></div>
-                </div>
-                <div class="round-actions">
-                    <a href="/admin/player-picks/{{ s['round'] }}" class="btn btn-small" style="background:#8e44ad;">&#9998; Edit Player Picks</a>
-                </div>
+        
+        <div class="card" style="margin-top: 20px;">
+            <h3 style="margin-top: 0;">Other Admin Tools</h3>
+            <div style="display: flex; gap: 10px; flex-wrap: wrap;">
+                <a href="/admin/schedule" class="btn btn-small">📅 Manage Schedule</a>
+                <a href="/admin/riders" class="btn btn-small">🏍️ Manage Riders</a>
+                <a href="/admin/manage-users" class="btn btn-small">👥 Manage Users</a>
+                <a href="/admin/export" class="btn btn-small">📦 Export Database</a>
             </div>
         </div>
-        {% endfor %}
-        {% endif %}
-
-        {% if past %}
-        <hr class="section-divider">
-        <h3 style="color:#e74c3c;margin-bottom:10px;">&#8987; Deadline Passed</h3>
-        {% for s in past %}
-        <div class="round-card" style="border-color:{{ '#3a5a3a' if s['has_results'] else '#5a3a3a' }};">
-            <div class="round-card-header">
-                <span class="round-num-badge">R{{ s['round'] }}</span>
-                <span style="font-weight:600;">{{ s['location'] }}</span>
-                <span class="race-type-badge" style="background:{{ get_race_type_display(s['race_type'])['color'] }}20;color:{{ get_race_type_display(s['race_type'])['color'] }};border:1px solid {{ get_race_type_display(s['race_type'])['color'] }};">
-                    {{ get_race_type_display(s['race_type'])['emoji'] }} {{ get_race_type_display(s['race_type'])['name'] }}
-                </span>
-                <span style="color:#e74c3c;font-size:0.9em;margin-left:auto;">{{ s['race_date'].strftime('%b %d, %Y') }}</span>
-            </div>
-            <div class="round-card-body">
-                <div class="round-meta">
-                    <div class="round-meta-item">250: <strong>{{ s['class_250'] }}</strong></div>
-                    <div class="round-meta-item">
-                        Results:
-                        {% if s['has_results'] %}<strong style="color:#27ae60;">{{ s['results_count'] }} entries</strong>
-                        {% else %}<strong style="color:#e74c3c;">Not entered</strong>{% endif %}
-                    </div>
-                    <div class="round-meta-item">Picks: <strong>{{ s['picks_count'] }}</strong></div>
-                </div>
-                <div class="round-actions">
-                    <a href="/admin/{{ s['round'] }}" class="btn btn-small">&#128203; Enter Results</a>
-                    <a href="/admin/fetch-results/{{ s['round'] }}" class="btn btn-small" style="background:#27ae60;"
-                       onclick="return confirm('Auto-fetch results for Round {{ s['round'] }}?');">Auto-Fetch</a>
-                    <a href="/admin/assign-autopicks/{{ s['round'] }}" class="btn btn-small" style="background:#f39c12;"
-                       onclick="return confirm('Assign auto-picks for all users who missed Round {{ s['round'] }}?');">Auto-Pick All</a>
-                    <a href="/admin/player-picks/{{ s['round'] }}" class="btn btn-small" style="background:#8e44ad;">&#9998; Edit Player Picks</a>
-                </div>
-            </div>
+        
+        <div style="margin-top: 30px;">
+            <a href="/dashboard" class="link">← Back to Dashboard</a>
         </div>
-        {% endfor %}
-        {% endif %}
-
-        <div style="margin-top:30px;"><a href="/dashboard" class="link">&#8592; Back to Dashboard</a></div>
     </div>
-    """, upcoming=upcoming, past=past, get_race_type_display=get_race_type_display, last_updated=last_updated)
-
-
+    ''', schedule=schedule, get_race_type_display=get_race_type_display, 
+         get_deadline_for_round=get_deadline_for_round, now_utc=now_utc, last_updated=last_updated,
+         results_counts=results_counts, picks_counts=picks_counts, total_users=total_users)
+ 
 @app.route('/admin/<int:round_num>', methods=['GET', 'POST'])
 def admin_results(round_num):
     if session.get('username') != 'admin':
@@ -2327,57 +2354,138 @@ def admin_results(round_num):
     if not round_info:
         flash('Invalid round')
         return redirect(url_for('dashboard'))
+    
     riders_450 = get_riders_by_class('450')
     riders_250 = get_available_250_riders(round_num)
+    
+    conn = get_db_connection()
+    c = conn.cursor()
+    
+    # Handle form submissions
     if request.method == 'POST':
-        conn = get_db_connection()
-        c = conn.cursor()
-        try:
-            # Collect submitted positions and check for duplicates per class
-            submitted = {}
+        action = request.form.get('action')
+        
+        if action == 'save_results':
+            # Save race results
             for cls, riders in [('450', riders_450), ('250', riders_250)]:
-                positions_seen = {}
                 for rider in riders:
                     pos_str = request.form.get(f'{cls}_{rider.replace(" ", "_")}')
                     if pos_str and pos_str.isdigit():
-                        pos = int(pos_str)
-                        if pos in positions_seen:
-                            flash(f'⚠️ Duplicate position {pos} in {cls} class '
-                                  f'({rider} and {positions_seen[pos]}). Fix and resubmit.')
-                            conn.close()
-                            return redirect(url_for('admin_results', round_num=round_num))
-                        positions_seen[pos] = rider
-                        submitted.setdefault(cls, []).append((rider, pos))
-
-            # All valid — apply to DB
-            saved_count = 0
-            for cls, entries in submitted.items():
-                for rider, pos in entries:
-                    c.execute('DELETE FROM results WHERE round_num = %s AND class = %s AND rider = %s',
-                              (round_num, cls, rider))
-                    c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s)',
-                              (round_num, cls, rider, pos))
-                    saved_count += 1
-
+                        c.execute('DELETE FROM results WHERE round_num = %s AND class = %s AND rider = %s',
+                                  (round_num, cls, rider))
+                        c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s)',
+                                  (round_num, cls, rider, int(pos_str)))
+                    elif not pos_str:
+                        # Clear result if position is empty
+                        c.execute('DELETE FROM results WHERE round_num = %s AND class = %s AND rider = %s',
+                                  (round_num, cls, rider))
             conn.commit()
-            if saved_count > 0:
-                flash(f'✓ Manual results saved — {saved_count} rider positions recorded.')
+            flash('✓ Results saved successfully!')
+        
+        elif action == 'save_pick':
+            # Save/update a player's pick
+            user_id = request.form.get('user_id')
+            rider_450 = request.form.get('pick_450')
+            rider_250 = request.form.get('pick_250')
+            
+            if user_id and rider_450 and rider_250:
+                # Delete existing picks for this user/round
+                c.execute('DELETE FROM picks WHERE user_id = %s AND round_num = %s', (user_id, round_num))
+                # Insert new picks (marked as manual admin entry with auto_random=2)
+                c.execute('INSERT INTO picks (user_id, round_num, class, rider, auto_random) VALUES (%s, %s, %s, %s, %s)',
+                          (user_id, round_num, '450', rider_450, 2))
+                c.execute('INSERT INTO picks (user_id, round_num, class, rider, auto_random) VALUES (%s, %s, %s, %s, %s)',
+                          (user_id, round_num, '250', rider_250, 2))
+                conn.commit()
+                flash(f'✓ Picks saved for user!')
             else:
-                flash('No positions were entered. Fill in at least one position to save.')
-        except Exception as e:
-            conn.rollback()
-            flash(f'⚠️ Error saving results: {str(e)}')
-        finally:
-            conn.close()
+                flash('⚠️ Please select both riders')
+        
+        elif action == 'delete_pick':
+            user_id = request.form.get('user_id')
+            if user_id:
+                c.execute('DELETE FROM picks WHERE user_id = %s AND round_num = %s', (user_id, round_num))
+                conn.commit()
+                flash('✓ Picks deleted')
+    
+    # Get existing results
+    c.execute('SELECT class, rider, position FROM results WHERE round_num = %s', (round_num,))
+    existing_results = {(r['class'], r['rider']): r['position'] for r in c.fetchall()}
+    
+    # Get all users
+    c.execute('SELECT id, username FROM users ORDER BY username')
+    all_users = c.fetchall()
+    
+    # Get all picks for this round
+    c.execute('''SELECT u.id as user_id, u.username, p.class, p.rider, p.auto_random
+                 FROM users u
+                 LEFT JOIN picks p ON u.id = p.user_id AND p.round_num = %s
+                 ORDER BY u.username, p.class''', (round_num,))
+    picks_raw = c.fetchall()
+    
+    # Organize picks by user
+    user_picks = {}
+    for row in picks_raw:
+        uid = row['user_id']
+        if uid not in user_picks:
+            user_picks[uid] = {'username': row['username'], '450': None, '250': None}
+        if row['class'] and row['rider']:
+            user_picks[uid][row['class']] = {
+                'rider': row['rider'],
+                'auto_random': row['auto_random']
+            }
+    
+    conn.close()
+    
     location = round_info['location'].split(',')[0]
     race_type_info = get_race_type_display(round_info['race_type'])
+    
+    # Check deadline
+    deadline = get_deadline_for_round(round_num)
+    from datetime import timezone
+    now_utc = datetime.now(timezone.utc)
+    deadline_passed = deadline and now_utc > deadline
+    
     return render_template_string(get_base_style() + '''
+    <style>
+        .admin-section { margin-bottom: 30px; }
+        .admin-section h3 { 
+            background: #3d3d3d; 
+            padding: 15px; 
+            margin: -20px -20px 20px -20px; 
+            border-radius: 8px 8px 0 0;
+        }
+        .pick-status { font-size: 0.8em; padding: 2px 8px; border-radius: 4px; margin-left: 5px; }
+        .pick-manual { background: #3498db; color: white; }
+        .pick-auto { background: #e74c3c; color: white; }
+        .pick-user { background: #27ae60; color: white; }
+        .quick-actions { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
+        .results-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 10px; }
+        .results-grid .rider-input { display: flex; align-items: center; gap: 10px; }
+        .results-grid input[type="number"] { width: 70px; }
+        .results-grid label { flex: 1; font-size: 0.9em; }
+        .user-picks-table td { padding: 8px 12px; }
+        .edit-pick-form { display: none; background: #3a3a3a; padding: 15px; margin-top: 10px; border-radius: 6px; }
+        .edit-pick-form.active { display: block; }
+    </style>
     <div class="container">
-        <h1>🔧 Manual Results Entry - Round {{ round_num }} {{ location }}
+        <h1>🔧 Round {{ round_num }} - {{ location }}
             <span class="race-type-badge" style="background: {{ race_type_info['color'] }}20; color: {{ race_type_info['color'] }}; border: 1px solid {{ race_type_info['color'] }};">
                 {{ race_type_info['emoji'] }} {{ race_type_info['name'] }}
             </span>
         </h1>
+        
+        <p style="color: #b0b0b0; margin-bottom: 20px;">
+            <strong>Date:</strong> {{ round_info['race_date'].strftime('%B %d, %Y') }} |
+            <strong>250 Class:</strong> {{ round_info['class_250'] }} |
+            <strong>Status:</strong> 
+            {% if deadline_passed %}
+                <span style="color: #e74c3c;">⏰ Deadline Passed</span>
+            {% else %}
+                <span style="color: #27ae60;">✓ Open for Picks</span>
+            {% endif %}
+        </p>
+        
         {% with messages = get_flashed_messages() %}
             {% if messages %}
                 {% for message in messages %}
@@ -2385,168 +2493,186 @@ def admin_results(round_num):
                 {% endfor %}
             {% endif %}
         {% endwith %}
-        <form method="post">
-            {% for cls, riders in [('450', riders_450), ('250', riders_250)] %}
-            <div class="card">
-                <h3 style="margin-top: 0;">{{ cls }} Class Results</h3>
-                <div style="display: grid; grid-template-columns: repeat(auto-fill, minmax(250px, 1fr)); gap: 15px;">
-                    {% for r in riders %}
-                    <div>
-                        <label style="font-weight: 600;">{{ r }}</label>
-                        <input name="{{ cls }}_{{ r.replace(' ', '_') }}" type="number" min="1" placeholder="Position">
+        
+        <!-- QUICK ACTIONS -->
+        <div class="quick-actions">
+            <a href="/admin/fetch-results/{{ round_num }}" class="btn btn-small" style="background: #27ae60;"
+               onclick="return confirm('Auto-fetch results from supermotocross.com?');">
+               🔄 Auto-Fetch Results
+            </a>
+            <a href="/admin/assign-autopicks/{{ round_num }}" class="btn btn-small" style="background: #f39c12;"
+               onclick="return confirm('Assign auto-picks to users who missed deadline?');">
+               🎲 Auto-Pick Missing Users
+            </a>
+            <a href="/admin/recalculate-leaderboard" class="btn btn-small" style="background: #9b59b6;"
+               onclick="this.innerHTML='⏳ Calculating...'; this.style.pointerEvents='none';">
+               📊 Recalculate Leaderboard
+            </a>
+        </div>
+        
+        <!-- RESULTS ENTRY SECTION -->
+        <div class="card admin-section">
+            <h3 style="margin-top: 0;">🏁 Race Results</h3>
+            <p style="color: #b0b0b0; margin-bottom: 15px;">
+                Enter finishing positions for each rider. Leave blank for DNF/DNS.
+                {% if existing_results %}
+                <br><span style="color: #27ae60;">✓ {{ existing_results|length }} results already entered</span>
+                {% endif %}
+            </p>
+            <form method="post">
+                <input type="hidden" name="action" value="save_results">
+                
+                <h4 style="color: #c9975b; margin-top: 20px;">450 Class</h4>
+                <div class="results-grid">
+                    {% for r in riders_450 %}
+                    <div class="rider-input">
+                        <label>{{ r }}</label>
+                        <input name="450_{{ r.replace(' ', '_') }}" type="number" min="1" max="40" 
+                               value="{{ existing_results.get(('450', r), '') }}" placeholder="Pos">
                     </div>
                     {% endfor %}
                 </div>
-            </div>
-            {% endfor %}
-            <button type="submit" class="btn">Save Results</button>
-        </form>
+                
+                <h4 style="color: #c9975b; margin-top: 25px;">250 Class</h4>
+                <div class="results-grid">
+                    {% for r in riders_250 %}
+                    <div class="rider-input">
+                        <label>{{ r }}</label>
+                        <input name="250_{{ r.replace(' ', '_') }}" type="number" min="1" max="40"
+                               value="{{ existing_results.get(('250', r), '') }}" placeholder="Pos">
+                    </div>
+                    {% endfor %}
+                </div>
+                
+                <button type="submit" class="btn" style="margin-top: 20px;">💾 Save Results</button>
+            </form>
+        </div>
+        
+        <!-- PLAYER PICKS SECTION -->
+        <div class="card admin-section">
+            <h3 style="margin-top: 0;">👥 Player Picks</h3>
+            <p style="color: #b0b0b0; margin-bottom: 15px;">
+                View and manage picks for all players. Click "Edit" to modify a player's picks.
+            </p>
+            
+            <table class="user-picks-table">
+                <thead>
+                    <tr>
+                        <th>Player</th>
+                        <th>450 Pick</th>
+                        <th>250 Pick</th>
+                        <th>Status</th>
+                        <th>Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for uid, data in user_picks.items() %}
+                    <tr>
+                        <td><strong>{{ data.username }}</strong></td>
+                        <td>
+                            {% if data['450'] %}
+                                {{ data['450']['rider'] }}
+                            {% else %}
+                                <span style="color: #999;">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if data['250'] %}
+                                {{ data['250']['rider'] }}
+                            {% else %}
+                                <span style="color: #999;">—</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if data['450'] and data['250'] %}
+                                {% if data['450']['auto_random'] == 2 or data['250']['auto_random'] == 2 %}
+                                    <span class="pick-status pick-manual">Admin</span>
+                                {% elif data['450']['auto_random'] == 1 or data['250']['auto_random'] == 1 %}
+                                    <span class="pick-status pick-auto">Auto</span>
+                                {% else %}
+                                    <span class="pick-status pick-user">User</span>
+                                {% endif %}
+                            {% else %}
+                                <span style="color: #e74c3c;">No picks</span>
+                            {% endif %}
+                        </td>
+                        <td>
+                            <button type="button" class="btn btn-small" 
+                                    onclick="toggleEditForm('edit-{{ uid }}')">
+                                ✏️ Edit
+                            </button>
+                            {% if data['450'] or data['250'] %}
+                            <form method="post" style="display: inline;">
+                                <input type="hidden" name="action" value="delete_pick">
+                                <input type="hidden" name="user_id" value="{{ uid }}">
+                                <button type="submit" class="btn btn-small btn-danger"
+                                        onclick="return confirm('Delete picks for {{ data.username }}?');">
+                                    🗑️
+                                </button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td colspan="5" style="padding: 0;">
+                            <div id="edit-{{ uid }}" class="edit-pick-form">
+                                <form method="post">
+                                    <input type="hidden" name="action" value="save_pick">
+                                    <input type="hidden" name="user_id" value="{{ uid }}">
+                                    <div style="display: grid; grid-template-columns: 1fr 1fr auto; gap: 15px; align-items: end;">
+                                        <div>
+                                            <label><strong>450 Rider</strong></label>
+                                            <select name="pick_450" required>
+                                                <option value="">Select rider...</option>
+                                                {% for r in riders_450 %}
+                                                <option value="{{ r }}" {% if data['450'] and data['450']['rider'] == r %}selected{% endif %}>
+                                                    {{ r }}
+                                                </option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <label><strong>250 Rider</strong></label>
+                                            <select name="pick_250" required>
+                                                <option value="">Select rider...</option>
+                                                {% for r in riders_250 %}
+                                                <option value="{{ r }}" {% if data['250'] and data['250']['rider'] == r %}selected{% endif %}>
+                                                    {{ r }}
+                                                </option>
+                                                {% endfor %}
+                                            </select>
+                                        </div>
+                                        <div>
+                                            <button type="submit" class="btn btn-small">💾 Save</button>
+                                            <button type="button" class="btn btn-small" style="background: #666;"
+                                                    onclick="toggleEditForm('edit-{{ uid }}')">Cancel</button>
+                                        </div>
+                                    </div>
+                                </form>
+                            </div>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        
+        <script>
+            function toggleEditForm(formId) {
+                var form = document.getElementById(formId);
+                form.classList.toggle('active');
+            }
+        </script>
+        
         <div style="margin-top: 30px;">
+            <a href="/admin/results-selector" class="link">← Back to Rounds List</a> |
             <a href="/dashboard" class="link">← Back to Dashboard</a>
         </div>
     </div>
-    ''', round_num=round_num, riders_450=riders_450, riders_250=riders_250, 
-         location=location, race_type_info=race_type_info)
-
-@app.route('/admin/player-picks/<int:round_num>', methods=['GET', 'POST'])
-def admin_player_picks(round_num):
-    """Admin page to view and manually set or override any player's picks for a round."""
-    if session.get('username') != 'admin':
-        return redirect(url_for('login'))
-
-    round_info = get_round_info(round_num)
-    if not round_info:
-        flash('Invalid round')
-        return redirect(url_for('admin_results_selector'))
-
-    riders_450 = get_riders_by_class('450')
-    riders_250 = get_available_250_riders(round_num)
-    location = round_info['location'].split(',')[0]
-    race_type_info = get_race_type_display(round_info['race_type'])
-
-    conn = get_db_connection()
-    c = conn.cursor()
-
-    if request.method == 'POST':
-        action = request.form.get('action')
-        user_id = request.form.get('user_id')
-        try:
-            if action == 'save_picks':
-                rider_450 = request.form.get('rider_450')
-                rider_250 = request.form.get('rider_250')
-                if not rider_450 or not rider_250:
-                    flash('Both a 450 and 250 rider must be selected.')
-                elif rider_450 not in riders_450 or rider_250 not in riders_250:
-                    flash('Invalid rider selection.')
-                else:
-                    c.execute('DELETE FROM picks WHERE user_id = %s AND round_num = %s', (user_id, round_num))
-                    c.execute(
-                        'INSERT INTO picks (user_id, round_num, class, rider, auto_random) VALUES (%s, %s, %s, %s, %s)',
-                        (user_id, round_num, '450', rider_450, 0))
-                    c.execute(
-                        'INSERT INTO picks (user_id, round_num, class, rider, auto_random) VALUES (%s, %s, %s, %s, %s)',
-                        (user_id, round_num, '250', rider_250, 0))
-                    conn.commit()
-                    c.execute('SELECT username FROM users WHERE id = %s', (user_id,))
-                    u = c.fetchone()
-                    uname = u['username'] if u else f'User {user_id}'
-                    flash(f'Picks saved for {uname}: {rider_450} (450) / {rider_250} (250)')
-            elif action == 'clear_picks':
-                c.execute('SELECT username FROM users WHERE id = %s', (user_id,))
-                u = c.fetchone()
-                uname = u['username'] if u else f'User {user_id}'
-                c.execute('DELETE FROM picks WHERE user_id = %s AND round_num = %s', (user_id, round_num))
-                conn.commit()
-                flash(f'Picks cleared for {uname} \u2014 Round {round_num}')
-        except Exception as e:
-            conn.rollback()
-            flash(f'Error saving picks: {str(e)}')
-
-    c.execute('SELECT id, username FROM users ORDER BY username')
-    all_users = c.fetchall()
-    c.execute('SELECT user_id, class, rider, auto_random FROM picks WHERE round_num = %s', (round_num,))
-    all_picks_raw = c.fetchall()
-    conn.close()
-
-    picks_by_user = {}
-    for p in all_picks_raw:
-        uid = p['user_id']
-        if uid not in picks_by_user:
-            picks_by_user[uid] = {}
-        picks_by_user[uid][p['class']] = {'rider': p['rider'], 'auto_random': p['auto_random']}
-
-    PLAYER_PICKS_TEMPLATE = get_base_style() + (
-        '<style>'
-        '.player-row{background:#363636;border-radius:8px;border:1px solid #3d3d3d;margin-bottom:14px;overflow:hidden;}'
-        '.player-row-header{display:flex;align-items:center;gap:12px;padding:12px 18px;background:#3a3a3a;border-bottom:1px solid #4a4a4a;flex-wrap:wrap;}'
-        '.player-row-body{padding:14px 18px;}'
-        '.pick-grid{display:grid;grid-template-columns:1fr 1fr auto auto;gap:12px;align-items:end;}'
-        '@media(max-width:700px){.pick-grid{grid-template-columns:1fr 1fr;}}'
-        '.auto-badge{display:inline-block;background:#e74c3c20;color:#e74c3c;border:1px solid #e74c3c;border-radius:4px;font-size:0.75em;padding:1px 7px;font-weight:600;margin-left:6px;}'
-        '</style>'
-        '<div class="container">'
-        '<h1>&#9998; Player Picks &mdash; Round {{ round_num }} {{ location }}'
-        '<span class="race-type-badge" style="background:{{ race_type_info[\'color\'] }}20;color:{{ race_type_info[\'color\'] }};border:1px solid {{ race_type_info[\'color\'] }};">'
-        '{{ race_type_info[\'emoji\'] }} {{ race_type_info[\'name\'] }}</span></h1>'
-        '<p style="color:#b0b0b0;margin-bottom:20px;">'
-        'Set or override any player\'s picks for this round. Changes bypass the deadline and 3-round rule &mdash; use carefully.'
-        '</p>'
-        '{% with messages = get_flashed_messages() %}'
-        '{% if messages %}{% for msg in messages %}<div class="flash">{{ msg }}</div>{% endfor %}{% endif %}'
-        '{% endwith %}'
-        '{% for user in all_users %}'
-        '{% set uid = user[\'id\'] %}'
-        '{% set user_picks = picks_by_user.get(uid, {}) %}'
-        '{% set pick_450 = user_picks.get(\'450\', {}) %}'
-        '{% set pick_250 = user_picks.get(\'250\', {}) %}'
-        '<div class="player-row">'
-        '<div class="player-row-header">'
-        '<strong style="font-size:1.05em;">{{ user[\'username\'] }}</strong>'
-        '{% if pick_450 and pick_250 %}'
-        '<span style="color:#27ae60;font-size:0.9em;">&#10003; Picks submitted</span>'
-        '{% if pick_450.get(\'auto_random\') or pick_250.get(\'auto_random\') %}<span class="auto-badge">AUTO</span>{% endif %}'
-        '{% else %}<span style="color:#e74c3c;font-size:0.9em;">&#10007; No picks</span>{% endif %}'
-        '</div>'
-        '<div class="player-row-body">'
-        '{% if pick_450 or pick_250 %}'
-        '<p style="font-size:0.85em;color:#b0b0b0;margin-bottom:10px;">Current: '
-        '<strong style="color:#c9975b;">{{ pick_450.get(\'rider\', \'&mdash;\') }}</strong> (450) / '
-        '<strong style="color:#c9975b;">{{ pick_250.get(\'rider\', \'&mdash;\') }}</strong> (250)</p>'
-        '{% endif %}'
-        '<form method="post">'
-        '<input type="hidden" name="action" value="save_picks">'
-        '<input type="hidden" name="user_id" value="{{ uid }}">'
-        '<div class="pick-grid">'
-        '<div><label style="font-size:0.85em;"><strong>450 Rider</strong></label>'
-        '<select name="rider_450" style="margin-top:4px;">'
-        '{% for r in riders_450 %}<option value="{{ r }}" {% if pick_450.get(\'rider\')==r %}selected{% endif %}>{{ r }}</option>{% endfor %}'
-        '</select></div>'
-        '<div><label style="font-size:0.85em;"><strong>250 Rider</strong></label>'
-        '<select name="rider_250" style="margin-top:4px;">'
-        '{% for r in riders_250 %}<option value="{{ r }}" {% if pick_250.get(\'rider\')==r %}selected{% endif %}>{{ r }}</option>{% endfor %}'
-        '</select></div>'
-        '<div style="padding-top:22px;"><button type="submit" class="btn btn-small">Save</button></div>'
-        '<div style="padding-top:22px;">'
-        '{% if pick_450 or pick_250 %}'
-        '<form method="post" style="display:inline;" onsubmit="return confirm(\'Clear picks for {{ user[\'username\'] }} in Round {{ round_num }}?\');">'
-        '<input type="hidden" name="action" value="clear_picks">'
-        '<input type="hidden" name="user_id" value="{{ uid }}">'
-        '<button type="submit" class="btn btn-small btn-danger">Clear</button>'
-        '</form>'
-        '{% endif %}'
-        '</div>'
-        '</div></form></div></div>'
-        '{% endfor %}'
-        '<div style="margin-top:28px;"><a href="/admin/results-selector" class="link">&#8592; Back to Admin Hub</a></div>'
-        '</div>'
-    )
-
-    return render_template_string(PLAYER_PICKS_TEMPLATE,
-        round_num=round_num, location=location, race_type_info=race_type_info,
-        all_users=all_users, picks_by_user=picks_by_user,
-        riders_450=riders_450, riders_250=riders_250)
-
-
+    ''', round_num=round_num, round_info=round_info, riders_450=riders_450, riders_250=riders_250, 
+         location=location, race_type_info=race_type_info, existing_results=existing_results,
+         user_picks=user_picks, all_users=all_users, deadline_passed=deadline_passed)
+ 
 @app.route('/admin/manage-users', methods=['GET', 'POST'])
 def admin_manage_users():
     if session.get('username') != 'admin':
@@ -2634,7 +2760,7 @@ def admin_manage_users():
         </div>
     </div>
     ''', users=users)
-
+ 
 @app.route('/admin/export')
 def admin_export():
     if session.get('username') != 'admin':
@@ -2649,25 +2775,18 @@ def admin_export():
             rows = c.fetchall()
             csv_buffer = StringIO()
             csv_writer = csv.writer(csv_buffer)
-            if rows:
-                csv_writer.writerow(rows[0].keys())
-                for row in rows:
-                    csv_writer.writerow(row.values())
-            else:
-                # Fetch column names from information schema so empty tables still have headers
-                c.execute('''SELECT column_name FROM information_schema.columns
-                             WHERE table_name = %s ORDER BY ordinal_position''', (table,))
-                col_names = [r['column_name'] for r in c.fetchall()]
-                csv_writer.writerow(col_names)
+            csv_writer.writerow(rows[0].keys() if rows else [])
+            for row in rows:
+                csv_writer.writerow(row.values())
             zip_file.writestr(f'{table}.csv', csv_buffer.getvalue())
     conn.close()
     zip_buffer.seek(0)
     return send_file(zip_buffer, as_attachment=True, download_name='fantasy_league_export.zip', mimetype='application/zip')
-
+ 
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('login'))
-
+ 
 if __name__ == '__main__':
-    app.run(debug=os.environ.get('FLASK_DEBUG', 'false').lower() == 'true')
+    app.run(debug=True)
