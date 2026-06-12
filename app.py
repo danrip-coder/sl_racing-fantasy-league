@@ -124,28 +124,13 @@ def recalculate_leaderboard():
     schedule = c.fetchall()
     round_race_types = {s['round']: s['race_type'] for s in schedule}
     
-    # Get all rounds that have passed deadline (calculate inline, no extra DB calls)
+    # Get all rounds that have passed deadline (DST-aware shared function, no extra DB calls)
     from datetime import timezone
     now_utc = datetime.now(timezone.utc)
     
     visible_rounds = []
     for s in schedule:
-        # Calculate deadline inline instead of calling get_deadline_for_round
-        location = s['location']
-        if 'CA' in location or 'Seattle' in location:
-            tz_offset = -8
-        elif 'TX' in location or 'IN' in location:
-            tz_offset = -6
-        elif 'FL' in location or 'NC' in location:
-            tz_offset = -5
-        elif 'AZ' in location or 'CO' in location:
-            tz_offset = -7
-        else:
-            tz_offset = -8
-        
-        deadline_local = datetime.combine(s['race_date'], datetime.min.time())
-        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
-        
+        deadline = calculate_deadline(s['race_date'], s['location'])
         if deadline and now_utc > deadline:
             visible_rounds.append(s['round'])
     
@@ -408,22 +393,7 @@ def get_current_round():
     conn.close()
     
     for s in schedule:
-        # Calculate deadline inline (no extra DB calls)
-        location = s['location']
-        if 'CA' in location or 'Seattle' in location:
-            tz_offset = -8
-        elif 'TX' in location or 'IN' in location:
-            tz_offset = -6
-        elif 'FL' in location or 'NC' in location:
-            tz_offset = -5
-        elif 'AZ' in location or 'CO' in location:
-            tz_offset = -7
-        else:
-            tz_offset = -8
-        
-        deadline_local = datetime.combine(s['race_date'], datetime.min.time())
-        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
-        
+        deadline = calculate_deadline(s['race_date'], s['location'])
         if now_utc < deadline:
             return s['round']
     
@@ -437,26 +407,69 @@ def get_round_info(round_num):
     conn.close()
     return result
  
+def calculate_deadline(race_date, location):
+    """
+    Calculate the pick deadline (midnight local time at the venue, the night before race day).
+    DST-AWARE: Uses ZoneInfo so summer (motocross) and winter (supercross) rounds
+    both get correct local midnight.
+    This is the SINGLE source of truth for deadlines - use everywhere.
+    """
+    from zoneinfo import ZoneInfo
+    
+    if 'CA' in location or 'Seattle' in location or 'WA' in location:
+        tz = ZoneInfo('America/Los_Angeles')
+    elif 'TX' in location:
+        tz = ZoneInfo('America/Chicago')
+    elif 'IN' in location:
+        tz = ZoneInfo('America/Indiana/Indianapolis')
+    elif 'FL' in location or 'NC' in location or 'NJ' in location or 'PA' in location or 'NY' in location or 'TN' in location or 'MA' in location or 'MD' in location:
+        tz = ZoneInfo('America/New_York')
+    elif 'AZ' in location:
+        tz = ZoneInfo('America/Phoenix')
+    elif 'CO' in location or 'UT' in location:
+        tz = ZoneInfo('America/Denver')
+    elif 'MN' in location or 'MI' in location or 'MO' in location or 'WI' in location:
+        tz = ZoneInfo('America/Chicago')
+    else:
+        tz = ZoneInfo('America/Los_Angeles')
+    
+    deadline_local = datetime.combine(race_date, datetime.min.time())
+    return deadline_local.replace(tzinfo=tz)
+ 
+def get_series_round_map():
+    """
+    Returns {global_round: {'series_round': N, 'race_type': type}} mapping.
+    Round numbers reset per series: Supercross 1-17, Motocross 1-11, SMX 1-3.
+    """
+    conn = get_db_connection()
+    c = conn.cursor()
+    c.execute('SELECT round, race_type FROM schedule ORDER BY round')
+    schedule = c.fetchall()
+    conn.close()
+    
+    series_counters = {}
+    round_map = {}
+    for s in schedule:
+        rt = s['race_type']
+        series_counters[rt] = series_counters.get(rt, 0) + 1
+        round_map[s['round']] = {'series_round': series_counters[rt], 'race_type': rt}
+    return round_map
+ 
+def get_series_round_label(round_num, round_map=None):
+    """Get display label like 'SX R5' or 'MX R2' for a global round number."""
+    if round_map is None:
+        round_map = get_series_round_map()
+    info = round_map.get(round_num)
+    if not info:
+        return f"R{round_num}"
+    prefix = {'supercross': 'SX', 'motocross': 'MX', 'SMX': 'SMX'}.get(info['race_type'], '')
+    return f"{prefix} R{info['series_round']}"
+ 
 def get_deadline_for_round(round_num):
     round_info = get_round_info(round_num)
     if not round_info:
         return None
-    race_date = round_info['race_date']
-    location = round_info['location']
-    if 'CA' in location or 'Seattle' in location:
-        tz_offset = -8
-    elif 'TX' in location or 'IN' in location:
-        tz_offset = -6
-    elif 'FL' in location or 'NC' in location:
-        tz_offset = -5
-    elif 'AZ' in location or 'CO' in location:
-        tz_offset = -7
-    else:
-        tz_offset = -8
-    deadline_local = datetime.combine(race_date, datetime.min.time())
-    from datetime import timezone as tz
-    deadline_utc = deadline_local.replace(tzinfo=tz(timedelta(hours=tz_offset)))
-    return deadline_utc
+    return calculate_deadline(round_info['race_date'], round_info['location'])
  
 def get_round_location(round_num):
     round_info = get_round_info(round_num)
@@ -1156,14 +1169,16 @@ def dashboard():
     round_info = get_round_info(current_round)
     location = ""
     race_type_info = {'emoji': '🏍️', 'name': 'Racing', 'color': '#c9975b'}
+    series_label = f"Round {current_round}"
     if round_info:
         location = round_info['location'].split(',')[0]
         race_type_info = get_race_type_display(round_info['race_type'])
+        series_label = get_series_round_label(current_round)
     return render_template_string(get_base_style() + '''
     <div class="container">
         <h1>Welcome, {{ username }}! 🏁</h1>
         <p style="font-size: 1.2em; color: #b0b0b0; margin-bottom: 30px;">
-            <strong>Current Round:</strong> {{ current_round }} {{ location }}
+            <strong>Current Round:</strong> {{ series_label }} {{ location }}
             <span class="race-type-badge" style="background: {{ race_type_info['color'] }}20; color: {{ race_type_info['color'] }}; border: 1px solid {{ race_type_info['color'] }};">
                 {{ race_type_info['emoji'] }} {{ race_type_info['name'] }}
             </span>
@@ -1173,7 +1188,7 @@ def dashboard():
                 <div class="dashboard-card">
                     <h3>🏍️</h3>
                     <h3>Make Picks</h3>
-                    <p>Round {{ current_round }} {{ location }}</p>
+                    <p>{{ series_label }} {{ location }}</p>
                 </div>
             </a>
             <a href="/leaderboard" style="text-decoration: none;">
@@ -1211,7 +1226,7 @@ def dashboard():
             <a href="/logout" class="link">Logout</a>
         </div>
     </div>
-    ''', username=session['username'], current_round=current_round, location=location, race_type_info=race_type_info)
+    ''', username=session['username'], current_round=current_round, location=location, race_type_info=race_type_info, series_label=series_label)
  
 @app.route('/pick/<int:round_num>', methods=['GET', 'POST'])
 def pick(round_num):
@@ -1237,26 +1252,35 @@ def pick(round_num):
     existing_picks = {row['class']: (row['rider'], row['auto_random']) for row in existing}
     
     # Get player's picks from the previous 2 rounds (blocked by 3-round rule)
+    # Shows ALL rounds in the window, even if no picks were made for one
     prev_rounds = [r for r in [round_num-2, round_num-1] if r > 0]
     recent_picks = []
     blocked_450 = []
     blocked_250 = []
+    series_round_map = get_series_round_map()
     if prev_rounds:
-        c.execute('''SELECT p.round_num, p.class, p.rider, s.location
+        c.execute('''SELECT p.round_num, p.class, p.rider
                      FROM picks p
-                     LEFT JOIN schedule s ON s.round = p.round_num
-                     WHERE p.user_id = %s AND p.round_num = ANY(%s)
-                     ORDER BY p.round_num DESC, p.class''',
+                     WHERE p.user_id = %s AND p.round_num = ANY(%s)''',
                   (session['user_id'], prev_rounds))
         recent_raw = c.fetchall()
         
-        # Organize by round
+        # Get location for ALL previous rounds (even those without picks)
+        c.execute('SELECT round, location FROM schedule WHERE round = ANY(%s)', (prev_rounds,))
+        round_locations = {row['round']: row['location'].split(',')[0] for row in c.fetchall()}
+        
+        # Initialize every round in the window so none are silently missing
         recent_by_round = {}
+        for rnd in prev_rounds:
+            recent_by_round[rnd] = {
+                'round': rnd,
+                'label': get_series_round_label(rnd, series_round_map),
+                'location': round_locations.get(rnd, ''),
+                '450': None, '250': None
+            }
+        
         for row in recent_raw:
             rnd = row['round_num']
-            if rnd not in recent_by_round:
-                loc = row['location'].split(',')[0] if row['location'] else ''
-                recent_by_round[rnd] = {'round': rnd, 'location': loc, '450': None, '250': None}
             recent_by_round[rnd][row['class']] = row['rider']
             
             # Track blocked riders for dropdowns
@@ -1362,7 +1386,7 @@ def pick(round_num):
     class_250_type = round_info['class_250']
     return render_template_string(get_base_style() + '''
     <div class="container">
-        <h2>🏍️ Round {{ round_num }} {{ location }} - Picks
+        <h2>🏍️ {{ series_label }} {{ location }} - Picks
             <span class="race-type-badge" style="background: {{ race_type_info['color'] }}20; color: {{ race_type_info['color'] }}; border: 1px solid {{ race_type_info['color'] }};">
                 {{ race_type_info['emoji'] }} {{ race_type_info['name'] }}
             </span>
@@ -1451,7 +1475,7 @@ def pick(round_num):
             <div class="card" style="background: #3a2a2a; border-left-color: #e74c3c;">
                 <h3 style="margin-top: 0;">🚫 Your Recent Picks (Blocked This Round)</h3>
                 <p style="color: #b0b0b0; font-size: 0.9em; margin-bottom: 15px;">
-                    The 3-round rule means you <strong>cannot pick these riders</strong> for Round {{ round_num }}:
+                    The 3-round rule means you <strong>cannot pick these riders</strong> for this round:
                 </p>
                 <table style="box-shadow: none;">
                     <thead>
@@ -1464,9 +1488,21 @@ def pick(round_num):
                     <tbody>
                         {% for rp in recent_picks %}
                         <tr>
-                            <td><strong>R{{ rp['round'] }}</strong> {{ rp['location'] }}</td>
-                            <td style="color: #e74c3c; font-weight: 600;">{{ rp['450'] or '—' }}</td>
-                            <td style="color: #e74c3c; font-weight: 600;">{{ rp['250'] or '—' }}</td>
+                            <td><strong>{{ rp['label'] }}</strong> {{ rp['location'] }}</td>
+                            <td>
+                                {% if rp['450'] %}
+                                <span style="color: #e74c3c; font-weight: 600;">{{ rp['450'] }}</span>
+                                {% else %}
+                                <span style="color: #999; font-style: italic;">No pick — nothing blocked</span>
+                                {% endif %}
+                            </td>
+                            <td>
+                                {% if rp['250'] %}
+                                <span style="color: #e74c3c; font-weight: 600;">{{ rp['250'] }}</span>
+                                {% else %}
+                                <span style="color: #999; font-style: italic;">No pick — nothing blocked</span>
+                                {% endif %}
+                            </td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -1541,7 +1577,8 @@ def pick(round_num):
          existing_picks=existing_picks, message=message, deadline_passed=deadline_passed,
          all_players_picks=all_players_picks, location=location, session=session, 
          deadline_iso=deadline_iso, race_type_info=race_type_info, class_250_type=class_250_type,
-         recent_picks=recent_picks, blocked_450=blocked_450, blocked_250=blocked_250)
+         recent_picks=recent_picks, blocked_450=blocked_450, blocked_250=blocked_250,
+         series_label=get_series_round_label(round_num, series_round_map))
  
 @app.route('/leaderboard')
 def leaderboard():
@@ -1576,30 +1613,22 @@ def leaderboard():
                  GROUP BY round_num''')
     results_counts = {row['round_num']: row['count'] for row in c.fetchall()}
     
-    # Calculate visible rounds (deadline passed)
+    # Calculate visible rounds (deadline passed) - DST-aware, with series round numbers
+    series_counters = {}
     visible_rounds = []
     for s in schedule:
-        # Calculate deadline inline
-        race_date = s['race_date']
-        location = s['location']
-        if 'CA' in location or 'Seattle' in location:
-            tz_offset = -8
-        elif 'TX' in location or 'IN' in location:
-            tz_offset = -6
-        elif 'FL' in location or 'NC' in location:
-            tz_offset = -5
-        elif 'AZ' in location or 'CO' in location:
-            tz_offset = -7
-        else:
-            tz_offset = -8
+        # Track series-relative round number (resets per series: SX 1-17, MX 1-11)
+        rt = s['race_type']
+        series_counters[rt] = series_counters.get(rt, 0) + 1
+        series_round = series_counters[rt]
         
-        deadline_local = datetime.combine(race_date, datetime.min.time())
-        deadline = deadline_local.replace(tzinfo=timezone(timedelta(hours=tz_offset)))
+        deadline = calculate_deadline(s['race_date'], s['location'])
         
         if deadline and now_utc > deadline:
             round_info = dict(s)
             round_info['has_results'] = results_counts.get(s['round'], 0) > 0
-            round_info['short_location'] = location.split(',')[0]
+            round_info['short_location'] = s['location'].split(',')[0]
+            round_info['series_round'] = series_round
             
             if view == 'overall' or s['race_type'] == view:
                 visible_rounds.append(round_info)
@@ -1724,7 +1753,7 @@ def leaderboard():
                         {% if view != 'overall' %}
                         {% for rnd_info in visible_rounds %}
                         <th style="text-align: center; {% if not rnd_info['has_results'] %}background: #f39c12;{% endif %}">
-                            R{{ rnd_info['round'] }} {{ rnd_info['short_location'] }}<br>
+                            R{{ rnd_info['series_round'] }} {{ rnd_info['short_location'] }}<br>
                             <small style="opacity: 0.7;">{{ get_race_type_display(rnd_info['race_type'])['emoji'] }} 450 | 250</small>
                             {% if not rnd_info['has_results'] %}
                             <br><small style="font-weight: normal; opacity: 0.9;">⏱️ In Progress</small>
