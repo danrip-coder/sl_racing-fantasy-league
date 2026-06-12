@@ -1,4 +1,3 @@
-
 from flask import Flask, request, redirect, url_for, render_template_string, session, flash, send_file
 from werkzeug.security import generate_password_hash, check_password_hash
 import psycopg2
@@ -1236,6 +1235,38 @@ def pick(round_num):
               (session['user_id'], round_num))
     existing = c.fetchall()
     existing_picks = {row['class']: (row['rider'], row['auto_random']) for row in existing}
+    
+    # Get player's picks from the previous 2 rounds (blocked by 3-round rule)
+    prev_rounds = [r for r in [round_num-2, round_num-1] if r > 0]
+    recent_picks = []
+    blocked_450 = []
+    blocked_250 = []
+    if prev_rounds:
+        c.execute('''SELECT p.round_num, p.class, p.rider, s.location
+                     FROM picks p
+                     LEFT JOIN schedule s ON s.round = p.round_num
+                     WHERE p.user_id = %s AND p.round_num = ANY(%s)
+                     ORDER BY p.round_num DESC, p.class''',
+                  (session['user_id'], prev_rounds))
+        recent_raw = c.fetchall()
+        
+        # Organize by round
+        recent_by_round = {}
+        for row in recent_raw:
+            rnd = row['round_num']
+            if rnd not in recent_by_round:
+                loc = row['location'].split(',')[0] if row['location'] else ''
+                recent_by_round[rnd] = {'round': rnd, 'location': loc, '450': None, '250': None}
+            recent_by_round[rnd][row['class']] = row['rider']
+            
+            # Track blocked riders for dropdowns
+            if row['class'] == '450':
+                blocked_450.append(row['rider'])
+            else:
+                blocked_250.append(row['rider'])
+        
+        recent_picks = sorted(recent_by_round.values(), key=lambda x: x['round'], reverse=True)
+    
     c.execute('''SELECT u.username, p.class, p.rider, p.auto_random 
                  FROM picks p 
                  JOIN users u ON p.user_id = u.id 
@@ -1416,19 +1447,47 @@ def pick(round_num):
                 </p>
             </div>
         {% else %}
+            {% if recent_picks %}
+            <div class="card" style="background: #3a2a2a; border-left-color: #e74c3c;">
+                <h3 style="margin-top: 0;">🚫 Your Recent Picks (Blocked This Round)</h3>
+                <p style="color: #b0b0b0; font-size: 0.9em; margin-bottom: 15px;">
+                    The 3-round rule means you <strong>cannot pick these riders</strong> for Round {{ round_num }}:
+                </p>
+                <table style="box-shadow: none;">
+                    <thead>
+                        <tr>
+                            <th>Round</th>
+                            <th>450 Pick</th>
+                            <th>250 Pick</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for rp in recent_picks %}
+                        <tr>
+                            <td><strong>R{{ rp['round'] }}</strong> {{ rp['location'] }}</td>
+                            <td style="color: #e74c3c; font-weight: 600;">{{ rp['450'] or '—' }}</td>
+                            <td style="color: #e74c3c; font-weight: 600;">{{ rp['250'] or '—' }}</td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+            {% endif %}
             <form method="post">
                 <div class="card">
                     <h3 style="margin-top: 0;">{% if existing_picks %}Update Your Picks{% else %}Make Your Picks{% endif %}</h3>
                     <label><strong>450 Class Rider</strong></label>
                     <select name="rider_450">
                         {% for r in riders_450 %}
-                        <option {% if '450' in existing_picks and existing_picks['450'][0]==r %}selected{% endif %}>{{ r }}</option>
+                        <option value="{{ r }}" {% if '450' in existing_picks and existing_picks['450'][0]==r %}selected{% endif %}
+                                {% if r in blocked_450 %}disabled{% endif %}>{{ r }}{% if r in blocked_450 %} 🚫 (picked recently){% endif %}</option>
                         {% endfor %}
                     </select>
                     <label><strong>250 Class Rider</strong></label>
                     <select name="rider_250">
                         {% for r in riders_250 %}
-                        <option {% if '250' in existing_picks and existing_picks['250'][0]==r %}selected{% endif %}>{{ r }}</option>
+                        <option value="{{ r }}" {% if '250' in existing_picks and existing_picks['250'][0]==r %}selected{% endif %}
+                                {% if r in blocked_250 %}disabled{% endif %}>{{ r }}{% if r in blocked_250 %} 🚫 (picked recently){% endif %}</option>
                         {% endfor %}
                     </select>
                     <button type="submit" class="btn">{% if existing_picks %}Update Picks{% else %}Save Picks{% endif %}</button>
@@ -1481,7 +1540,8 @@ def pick(round_num):
     ''', round_num=round_num, riders_450=riders_450, riders_250=riders_250,
          existing_picks=existing_picks, message=message, deadline_passed=deadline_passed,
          all_players_picks=all_players_picks, location=location, session=session, 
-         deadline_iso=deadline_iso, race_type_info=race_type_info, class_250_type=class_250_type)
+         deadline_iso=deadline_iso, race_type_info=race_type_info, class_250_type=class_250_type,
+         recent_picks=recent_picks, blocked_450=blocked_450, blocked_250=blocked_250)
  
 @app.route('/leaderboard')
 def leaderboard():
