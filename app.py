@@ -14,6 +14,8 @@ from zipfile import ZipFile
  
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-key-change-in-production')
+if app.secret_key == 'dev-key-change-in-production':
+    print('WARNING: SECRET_KEY env var not set - using insecure dev key. Set SECRET_KEY in production!')
 DATABASE_URL = os.environ.get('DATABASE_URL')
  
 RACE_TYPES = {
@@ -22,8 +24,48 @@ RACE_TYPES = {
     'SMX': {'name': 'SuperMotocross', 'emoji': '🏁', 'color': '#f39c12'}
 }
  
+# ============================================================================
+# DATABASE CONNECTION - One connection per request, reused everywhere.
+# Previously every helper opened its own connection (7-9 per page load!),
+# causing slow page loads (TCP+TLS handshake each time) and connection leaks
+# on exceptions. Now all calls within a request share ONE connection, which
+# is automatically closed (with rollback on error) when the request ends.
+# Existing `conn.close()` calls are safely ignored via the proxy.
+# ============================================================================
+ 
+class _RequestConnProxy:
+    """Wraps the shared per-request connection; .close() is a no-op because
+    the real close happens automatically at request teardown."""
+    __slots__ = ('_conn',)
+    def __init__(self, conn):
+        self._conn = conn
+    def close(self):
+        pass  # Real close happens in teardown_appcontext
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+ 
 def get_db_connection():
-    return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    from flask import g, has_app_context
+    if not has_app_context():
+        # Outside a request (e.g. init_db at startup) - plain connection
+        return psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    conn = getattr(g, 'db_conn', None)
+    if conn is None or conn.closed:
+        g.db_conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+    return _RequestConnProxy(g.db_conn)
+ 
+@app.teardown_appcontext
+def _close_db_connection(exc):
+    from flask import g
+    conn = g.pop('db_conn', None)
+    if conn is not None and not conn.closed:
+        try:
+            if exc is not None:
+                conn.rollback()
+        except Exception:
+            pass
+        finally:
+            conn.close()
  
 def init_db():
     conn = get_db_connection()
@@ -96,6 +138,17 @@ def init_db():
     
     # Index for picks table (used in various places)
     c.execute('CREATE INDEX IF NOT EXISTS idx_picks_user_round ON picks(user_id, round_num)')
+    c.execute('CREATE INDEX IF NOT EXISTS idx_picks_round ON picks(round_num)')
+    
+    # Index for results rider lookups (used by auto-pick top riders query)
+    c.execute('CREATE INDEX IF NOT EXISTS idx_results_rider ON results(rider, round_num)')
+    
+    # ============================================================================
+    # MIGRATION: Allow the same rider name in multiple classes (e.g. a rider
+    # racing both 450 and 250). Replaces UNIQUE(name) with UNIQUE(name, class).
+    # ============================================================================
+    c.execute('ALTER TABLE riders DROP CONSTRAINT IF EXISTS riders_name_key')
+    c.execute('CREATE UNIQUE INDEX IF NOT EXISTS idx_riders_name_class ON riders(name, class)')
     
     conn.commit()
     conn.close()
@@ -186,7 +239,8 @@ def recalculate_leaderboard():
                 if pick:
                     rider = pick['rider']
                     rider_short_name = get_rider_short_name(rider, all_rider_names) if rider else '—'
-                    auto_random = bool(pick['auto_random'])
+                    # Only true auto-picks (1) show red; admin-entered picks (2) display normally
+                    auto_random = (pick['auto_random'] == 1)
                     
                     # Look up result
                     result_key = (rnd, cls, rider)
@@ -298,7 +352,9 @@ def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
         conn.close()
         return []
     
-    # OPTIMIZED: Single query to get points for ALL riders at once
+    # OPTIMIZED: Single query to get points for ALL riders at once.
+    # Filters by class so dual-class riders (450 + 250) don't get combined points.
+    results_class = '250' if rider_class == '250' else '450'
     c.execute('''SELECT rider,
                         SUM(CASE 
                             WHEN position = 1 THEN 25
@@ -310,8 +366,8 @@ def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
                         END) as total_points,
                         COUNT(*) as race_count
                  FROM results 
-                 WHERE rider = ANY(%s) AND round_num < %s
-                 GROUP BY rider''', (available_riders, round_num))
+                 WHERE rider = ANY(%s) AND round_num < %s AND class = %s
+                 GROUP BY rider''', (available_riders, round_num, results_class))
     
     results = c.fetchall()
     conn.close()
@@ -347,6 +403,7 @@ def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
     return fallback_all
  
 def get_points(position):
+    if position is None: return 0
     if position == 1: return 25
     elif position == 2: return 22
     elif position == 3: return 20
@@ -374,7 +431,8 @@ def get_rider_short_name(name, all_riders=None):
     
     # If we have a list of all riders, check for duplicate last names
     if all_riders:
-        same_last = [r for r in all_riders if r != name and r.split()[-1] == last_name]
+        same_last = [r for r in all_riders 
+                     if r and r != name and r.split() and r.split()[-1] == last_name]
         if same_last:
             return f"{first_initial}.{last_name}"
     
@@ -463,7 +521,7 @@ def get_series_round_label(round_num, round_map=None):
     if not info:
         return f"R{round_num}"
     prefix = {'supercross': 'SX', 'motocross': 'MX', 'SMX': 'SMX'}.get(info['race_type'], '')
-    return f"{prefix} R{info['series_round']}"
+    return f"{prefix} R{info['series_round']}".strip()
  
 def get_deadline_for_round(round_num):
     round_info = get_round_info(round_num)
@@ -955,7 +1013,7 @@ def get_base_style():
 @app.route('/', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
-        username = request.form['username']
+        username = request.form['username'].strip()
         password = request.form['password']
         conn = get_db_connection()
         c = conn.cursor()
@@ -998,20 +1056,27 @@ def login():
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
-        username = request.form['username']
-        email = request.form['email']
-        password = generate_password_hash(request.form['password'])
-        conn = get_db_connection()
-        c = conn.cursor()
-        try:
-            c.execute('INSERT INTO users (username, password, email) VALUES (%s, %s, %s)', (username, password, email))
-            conn.commit()
-            flash('Registered! You can now login.')
-            conn.close()
-            return redirect(url_for('login'))
-        except psycopg2.IntegrityError:
-            flash('Username or email already taken')
-            conn.close()
+        username = request.form['username'].strip()
+        email = request.form['email'].strip().lower()
+        raw_password = request.form['password']
+        if not username or len(username) > 50:
+            flash('Username must be 1-50 characters')
+        elif len(raw_password) < 6:
+            flash('Password must be at least 6 characters')
+        else:
+            password = generate_password_hash(raw_password)
+            conn = get_db_connection()
+            c = conn.cursor()
+            try:
+                c.execute('INSERT INTO users (username, password, email) VALUES (%s, %s, %s)', (username, password, email))
+                conn.commit()
+                flash('Registered! You can now login.')
+                conn.close()
+                return redirect(url_for('login'))
+            except psycopg2.IntegrityError:
+                conn.rollback()
+                flash('Username or email already taken')
+                conn.close()
     return render_template_string(get_base_style() + '''
     <div class="container">
         <h1>🏍️ Register for SL Racing SMX Tipping Comp</h1>
@@ -1533,6 +1598,9 @@ def pick(round_num):
         {% if all_players_picks %}
         <hr>
         <h3>Current Round Picks</h3>
+        {% if not deadline_passed %}
+        <p style="color: #b0b0b0; font-size: 0.9em;">Rider picks are hidden until the deadline passes.</p>
+        {% endif %}
         <table>
             <thead>
                 <tr>
@@ -1550,16 +1618,24 @@ def pick(round_num):
                     </td>
                     <td>
                         {% if picks['450'] %}
-                            {{ picks['450']['rider'] }}
-                            {% if picks['450']['auto_random'] %}<span class="random-pick">(Random)</span>{% endif %}
+                            {% if deadline_passed or player == session.username %}
+                                {{ picks['450']['rider'] }}
+                                {% if picks['450']['auto_random'] == 1 %}<span class="random-pick">(Random)</span>{% endif %}
+                            {% else %}
+                                <span style="color: #27ae60;">✓ Picked</span>
+                            {% endif %}
                         {% else %}
                             <span style="color:#999;">Not picked yet</span>
                         {% endif %}
                     </td>
                     <td>
                         {% if picks['250'] %}
-                            {{ picks['250']['rider'] }}
-                            {% if picks['250']['auto_random'] %}<span class="random-pick">(Random)</span>{% endif %}
+                            {% if deadline_passed or player == session.username %}
+                                {{ picks['250']['rider'] }}
+                                {% if picks['250']['auto_random'] == 1 %}<span class="random-pick">(Random)</span>{% endif %}
+                            {% else %}
+                                <span style="color: #27ae60;">✓ Picked</span>
+                            {% endif %}
                         {% else %}
                             <span style="color:#999;">Not picked yet</span>
                         {% endif %}
@@ -1637,18 +1713,13 @@ def leaderboard():
     round_nums = [r['round'] for r in visible_rounds]
     
     # Query 4: Get all round details from cache
+    # (Skipped entirely for 'overall' view - it only displays totals)
     round_details = {}
-    if round_nums:
-        if view == 'overall':
-            c.execute('''SELECT user_id, round_num, class, rider_initials, points, auto_random 
-                         FROM user_round_points 
-                         WHERE round_num = ANY(%s)
-                         ORDER BY user_id, round_num, class''', (round_nums,))
-        else:
-            c.execute('''SELECT user_id, round_num, class, rider_initials, points, auto_random 
-                         FROM user_round_points 
-                         WHERE round_num = ANY(%s) AND race_type = %s
-                         ORDER BY user_id, round_num, class''', (round_nums, view))
+    if round_nums and view != 'overall':
+        c.execute('''SELECT user_id, round_num, class, rider_initials, points, auto_random 
+                     FROM user_round_points 
+                     WHERE round_num = ANY(%s) AND race_type = %s
+                     ORDER BY user_id, round_num, class''', (round_nums, view))
         
         all_round_data = c.fetchall()
         
@@ -1904,23 +1975,85 @@ def admin_schedule():
     if request.method == 'POST':
         action = request.form.get('action')
         if action == 'add':
-            round_num = request.form.get('round')
+            round_num = int(request.form.get('round'))
             race_date = request.form.get('race_date')
             location = request.form.get('location')
             race_type = request.form.get('race_type')
             class_250 = request.form.get('class_250')
-            try:
-                c.execute('INSERT INTO schedule (round, race_date, location, race_type, class_250) VALUES (%s, %s, %s, %s, %s)',
-                          (round_num, race_date, location, race_type, class_250))
-                conn.commit()
-                flash('Round added successfully!')
-            except psycopg2.IntegrityError:
-                flash('Round number already exists')
+            insert_mode = request.form.get('insert_mode') == 'on'
+            
+            # Check if round number already exists
+            c.execute('SELECT COUNT(*) as count FROM schedule WHERE round = %s', (round_num,))
+            exists = c.fetchone()['count'] > 0
+            
+            if exists and not insert_mode:
+                flash(f'⚠️ Round {round_num} already exists. Tick "Insert & shift" to insert here and push later rounds up.')
+            else:
+                try:
+                    if exists and insert_mode:
+                        # SHIFT: move all rounds >= round_num up by 1, including picks & results.
+                        # Two-step negate trick avoids unique-constraint collisions mid-update.
+                        c.execute('UPDATE schedule SET round = -round WHERE round >= %s', (round_num,))
+                        c.execute('UPDATE schedule SET round = -round + 1 WHERE round < 0')
+                        # Picks and results have no unique constraint on round_num - simple shift
+                        c.execute('UPDATE picks SET round_num = round_num + 1 WHERE round_num >= %s', (round_num,))
+                        c.execute('UPDATE results SET round_num = round_num + 1 WHERE round_num >= %s', (round_num,))
+                        # Leaderboard cache is now stale - clear it so admin recalculates
+                        c.execute('DELETE FROM user_round_points')
+                        c.execute('DELETE FROM leaderboard_totals')
+                    
+                    c.execute('INSERT INTO schedule (round, race_date, location, race_type, class_250) VALUES (%s, %s, %s, %s, %s)',
+                              (round_num, race_date, location, race_type, class_250))
+                    conn.commit()
+                    if exists and insert_mode:
+                        flash(f'✓ Round {round_num} inserted! Later rounds (and their picks/results) shifted up by 1. Please click "Recalculate Leaderboard".')
+                    else:
+                        flash('Round added successfully!')
+                except psycopg2.IntegrityError:
+                    conn.rollback()
+                    flash('⚠️ Could not add round (database conflict)')
+        
+        elif action == 'edit':
+            round_id = request.form.get('round_id')
+            race_date = request.form.get('race_date')
+            location = request.form.get('location')
+            race_type = request.form.get('race_type')
+            class_250 = request.form.get('class_250')
+            c.execute('''UPDATE schedule SET race_date = %s, location = %s, race_type = %s, class_250 = %s 
+                         WHERE id = %s''',
+                      (race_date, location, race_type, class_250, round_id))
+            conn.commit()
+            flash('✓ Round updated! If you changed the race type, click "Recalculate Leaderboard".')
+        
         elif action == 'delete':
             round_id = request.form.get('round_id')
-            c.execute('DELETE FROM schedule WHERE id = %s', (round_id,))
-            conn.commit()
-            flash('Round deleted successfully!')
+            close_gap = request.form.get('close_gap') == 'on'
+            
+            # Get the round number being deleted
+            c.execute('SELECT round FROM schedule WHERE id = %s', (round_id,))
+            row = c.fetchone()
+            if row:
+                deleted_round = row['round']
+                # Remove the round and its picks/results
+                c.execute('DELETE FROM schedule WHERE id = %s', (round_id,))
+                c.execute('DELETE FROM picks WHERE round_num = %s', (deleted_round,))
+                c.execute('DELETE FROM results WHERE round_num = %s', (deleted_round,))
+                
+                if close_gap:
+                    # Shift all later rounds down by 1 (negate trick for unique constraint)
+                    c.execute('UPDATE schedule SET round = -round WHERE round > %s', (deleted_round,))
+                    c.execute('UPDATE schedule SET round = -round - 1 WHERE round < 0')
+                    c.execute('UPDATE picks SET round_num = round_num - 1 WHERE round_num > %s', (deleted_round,))
+                    c.execute('UPDATE results SET round_num = round_num - 1 WHERE round_num > %s', (deleted_round,))
+                
+                # Cache is stale either way
+                c.execute('DELETE FROM user_round_points')
+                c.execute('DELETE FROM leaderboard_totals')
+                conn.commit()
+                gap_msg = ' Later rounds shifted down.' if close_gap else ''
+                flash(f'✓ Round {deleted_round} deleted (including its picks/results).{gap_msg} Please click "Recalculate Leaderboard".')
+            else:
+                flash('Round not found')
     c.execute('SELECT * FROM schedule ORDER BY round')
     schedule = c.fetchall()
     conn.close()
@@ -1970,6 +2103,10 @@ def admin_schedule():
                         </select>
                     </div>
                 </div>
+                <label style="display: flex; align-items: center; gap: 8px; margin: 15px 0; cursor: pointer;">
+                    <input type="checkbox" name="insert_mode" style="width: auto; margin: 0;">
+                    <span><strong>Insert & shift</strong> — if this round number already exists, insert here and push that round and all later ones up by 1 (picks and results move with them)</span>
+                </label>
                 <button type="submit" class="btn">Add Round</button>
             </form>
         </div>
@@ -1982,7 +2119,7 @@ def admin_schedule():
                     <th>Location</th>
                     <th>Race Type</th>
                     <th>250 Class</th>
-                    <th>Delete</th>
+                    <th>Actions</th>
                 </tr>
             </thead>
             <tbody>
@@ -1998,16 +2135,67 @@ def admin_schedule():
                     </td>
                     <td>{{ s['class_250'] }}</td>
                     <td>
-                        <form method="post" style="display:inline;" onsubmit="return confirm('Delete Round {{ s['round'] }}?');">
+                        <button type="button" class="btn btn-small" onclick="toggleScheduleEdit('sched-edit-{{ s['id'] }}')">✏️ Edit</button>
+                        <form method="post" style="display:inline;" 
+                              onsubmit="return confirm('Delete Round {{ s['round'] }}? This also deletes its picks and results.' + (this.close_gap.checked ? ' Later rounds will shift down by 1.' : ''));">
                             <input type="hidden" name="action" value="delete">
                             <input type="hidden" name="round_id" value="{{ s['id'] }}">
+                            <label style="display: inline-flex; align-items: center; gap: 4px; font-size: 0.85em; margin-right: 5px; cursor: pointer;">
+                                <input type="checkbox" name="close_gap" style="width: auto; margin: 0;"> close gap
+                            </label>
                             <button type="submit" class="btn btn-small btn-danger">Delete</button>
                         </form>
+                    </td>
+                </tr>
+                <tr>
+                    <td colspan="6" style="padding: 0; border: none;">
+                        <div id="sched-edit-{{ s['id'] }}" style="display: none; background: #3a3a3a; padding: 15px; border-radius: 6px; margin: 5px 0;">
+                            <form method="post">
+                                <input type="hidden" name="action" value="edit">
+                                <input type="hidden" name="round_id" value="{{ s['id'] }}">
+                                <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; align-items: end;">
+                                    <div>
+                                        <label><strong>Date</strong></label>
+                                        <input type="date" name="race_date" value="{{ s['race_date'].strftime('%Y-%m-%d') }}" required>
+                                    </div>
+                                    <div>
+                                        <label><strong>Location</strong></label>
+                                        <input type="text" name="location" value="{{ s['location'] }}" required>
+                                    </div>
+                                    <div>
+                                        <label><strong>Race Type</strong></label>
+                                        <select name="race_type" required>
+                                            <option value="supercross" {% if s['race_type'] == 'supercross' %}selected{% endif %}>🏟️ Supercross</option>
+                                            <option value="motocross" {% if s['race_type'] == 'motocross' %}selected{% endif %}>🏞️ Motocross</option>
+                                            <option value="SMX" {% if s['race_type'] == 'SMX' %}selected{% endif %}>🏁 SMX</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <label><strong>250 Class</strong></label>
+                                        <select name="class_250" required>
+                                            <option value="West" {% if s['class_250'] == 'West' %}selected{% endif %}>West</option>
+                                            <option value="East" {% if s['class_250'] == 'East' %}selected{% endif %}>East</option>
+                                            <option value="Combined" {% if s['class_250'] == 'Combined' %}selected{% endif %}>Combined</option>
+                                        </select>
+                                    </div>
+                                    <div>
+                                        <button type="submit" class="btn btn-small">💾 Save</button>
+                                        <button type="button" class="btn btn-small" style="background: #666;" onclick="toggleScheduleEdit('sched-edit-{{ s['id'] }}')">Cancel</button>
+                                    </div>
+                                </div>
+                            </form>
+                        </div>
                     </td>
                 </tr>
                 {% endfor %}
             </tbody>
         </table>
+        <script>
+            function toggleScheduleEdit(id) {
+                var el = document.getElementById(id);
+                el.style.display = el.style.display === 'none' || el.style.display === '' ? 'block' : 'none';
+            }
+        </script>
         <div style="margin-top: 30px;">
             <a href="/dashboard" class="link">← Back to Dashboard</a>
         </div>
@@ -2023,14 +2211,15 @@ def admin_riders():
     if request.method == 'POST':
         action = request.form.get('action')
         if action == 'add':
-            name = request.form.get('name')
+            name = request.form.get('name', '').strip()
             rider_class = request.form.get('class')
             try:
                 c.execute('INSERT INTO riders (name, class, active) VALUES (%s, %s, TRUE)', (name, rider_class))
                 conn.commit()
-                flash(f'Rider {name} added successfully!')
+                flash(f'Rider {name} added to {rider_class} successfully! (Tip: to have a rider in both 450 and 250, add them once per class.)')
             except psycopg2.IntegrityError:
-                flash('Rider already exists')
+                conn.rollback()
+                flash(f'{name} is already in the {rider_class} class')
         elif action == 'toggle':
             rider_id = request.form.get('rider_id')
             c.execute('UPDATE riders SET active = NOT active WHERE id = %s', (rider_id,))
@@ -2478,6 +2667,19 @@ def admin_results(round_num):
             rider_250 = request.form.get('pick_250')
             
             if user_id and rider_450 and rider_250:
+                # Check 3-round rule and warn admin (but allow override)
+                nearby_rounds = [r for r in [round_num-2, round_num-1, round_num+1, round_num+2] if r > 0]
+                c.execute('''SELECT class, rider FROM picks 
+                            WHERE user_id = %s AND round_num = ANY(%s)''',
+                          (user_id, nearby_rounds))
+                nearby_picks = c.fetchall()
+                violations = []
+                for np in nearby_picks:
+                    if np['class'] == '450' and np['rider'] == rider_450:
+                        violations.append(f'{rider_450} (450)')
+                    if np['class'] == '250' and np['rider'] == rider_250:
+                        violations.append(f'{rider_250} (250)')
+                
                 # Delete existing picks for this user/round
                 c.execute('DELETE FROM picks WHERE user_id = %s AND round_num = %s', (user_id, round_num))
                 # Insert new picks (marked as manual admin entry with auto_random=2)
@@ -2486,7 +2688,10 @@ def admin_results(round_num):
                 c.execute('INSERT INTO picks (user_id, round_num, class, rider, auto_random) VALUES (%s, %s, %s, %s, %s)',
                           (user_id, round_num, '250', rider_250, 2))
                 conn.commit()
-                flash(f'✓ Picks saved for user!')
+                if violations:
+                    flash(f'⚠️ Picks saved, but NOTE: {", ".join(set(violations))} violates the 3-round rule (picked in a nearby round)')
+                else:
+                    flash(f'✓ Picks saved for user!')
             else:
                 flash('⚠️ Please select both riders')
         
