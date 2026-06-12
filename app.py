@@ -11,19 +11,19 @@ import csv
 import re
 from io import StringIO, BytesIO
 from zipfile import ZipFile
- 
+
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY', 'dev-key-change-in-production')
 if app.secret_key == 'dev-key-change-in-production':
     print('WARNING: SECRET_KEY env var not set - using insecure dev key. Set SECRET_KEY in production!')
 DATABASE_URL = os.environ.get('DATABASE_URL')
- 
+
 RACE_TYPES = {
     'supercross': {'name': 'Supercross', 'emoji': '🏟️', 'color': '#e74c3c'},
     'motocross': {'name': 'Motocross', 'emoji': '🏞️', 'color': '#27ae60'},
     'SMX': {'name': 'SuperMotocross', 'emoji': '🏁', 'color': '#f39c12'}
 }
- 
+
 # ============================================================================
 # DATABASE CONNECTION - One connection per request, reused everywhere.
 # Previously every helper opened its own connection (7-9 per page load!),
@@ -32,7 +32,7 @@ RACE_TYPES = {
 # is automatically closed (with rollback on error) when the request ends.
 # Existing `conn.close()` calls are safely ignored via the proxy.
 # ============================================================================
- 
+
 class _RequestConnProxy:
     """Wraps the shared per-request connection; .close() is a no-op because
     the real close happens automatically at request teardown."""
@@ -43,7 +43,7 @@ class _RequestConnProxy:
         pass  # Real close happens in teardown_appcontext
     def __getattr__(self, name):
         return getattr(self._conn, name)
- 
+
 def get_db_connection():
     from flask import g, has_app_context
     if not has_app_context():
@@ -53,7 +53,7 @@ def get_db_connection():
     if conn is None or conn.closed:
         g.db_conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
     return _RequestConnProxy(g.db_conn)
- 
+
 @app.teardown_appcontext
 def _close_db_connection(exc):
     from flask import g
@@ -66,7 +66,7 @@ def _close_db_connection(exc):
             pass
         finally:
             conn.close()
- 
+
 def init_db():
     conn = get_db_connection()
     c = conn.cursor()
@@ -152,13 +152,13 @@ def init_db():
     
     conn.commit()
     conn.close()
- 
+
 init_db()
- 
+
 # ============================================================================
 # LEADERBOARD CACHE FUNCTIONS
 # ============================================================================
- 
+
 def recalculate_leaderboard():
     """
     Recalculate the entire leaderboard cache. Called by admin only.
@@ -290,7 +290,7 @@ def recalculate_leaderboard():
     conn.close()
     
     return len(users), len(visible_rounds)
- 
+
 def get_leaderboard_last_updated():
     """Get when the leaderboard was last recalculated"""
     conn = get_db_connection()
@@ -299,7 +299,7 @@ def get_leaderboard_last_updated():
     result = c.fetchone()
     conn.close()
     return result
- 
+
 def get_schedule():
     conn = get_db_connection()
     c = conn.cursor()
@@ -307,7 +307,7 @@ def get_schedule():
     schedule = c.fetchall()
     conn.close()
     return schedule
- 
+
 def get_riders_by_class(rider_class):
     conn = get_db_connection()
     c = conn.cursor()
@@ -315,7 +315,7 @@ def get_riders_by_class(rider_class):
     riders = [r['name'] for r in c.fetchall()]
     conn.close()
     return riders
- 
+
 def get_available_250_riders(round_num):
     conn = get_db_connection()
     c = conn.cursor()
@@ -331,7 +331,7 @@ def get_available_250_riders(round_num):
         return get_riders_by_class('250_East')
     else:
         return get_riders_by_class('250_West') + get_riders_by_class('250_East')
- 
+
 def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
     """
     Get top 10 riders by championship points for smart auto-pick.
@@ -401,7 +401,7 @@ def get_top_riders_by_points(rider_class, round_num, exclude_riders=None):
     # Fallback 2: If no riders have results yet (very early season), use all available riders
     fallback_all = [r for r in available_riders if r not in (exclude_riders or [])]
     return fallback_all
- 
+
 def get_points(position):
     if position is None: return 0
     if position == 1: return 25
@@ -410,11 +410,11 @@ def get_points(position):
     elif position == 4: return 18
     elif position >= 5 and position <= 20: return 22 - position
     else: return 0
- 
+
 def get_initials(name):
     parts = name.split()
     return ''.join(p[0].upper() for p in parts if p)
- 
+
 def get_rider_short_name(name, all_riders=None):
     """
     Get rider's short name for display.
@@ -437,7 +437,7 @@ def get_rider_short_name(name, all_riders=None):
             return f"{first_initial}.{last_name}"
     
     return last_name
- 
+
 def get_current_round():
     """Get the current active round (first round whose deadline hasn't passed)"""
     from datetime import timezone
@@ -456,7 +456,7 @@ def get_current_round():
             return s['round']
     
     return len(schedule) + 1 if schedule else 1
- 
+
 def get_round_info(round_num):
     conn = get_db_connection()
     c = conn.cursor()
@@ -464,7 +464,7 @@ def get_round_info(round_num):
     result = c.fetchone()
     conn.close()
     return result
- 
+
 def calculate_deadline(race_date, location):
     """
     Calculate the pick deadline (midnight local time at the venue, the night before race day).
@@ -493,7 +493,7 @@ def calculate_deadline(race_date, location):
     
     deadline_local = datetime.combine(race_date, datetime.min.time())
     return deadline_local.replace(tzinfo=tz)
- 
+
 def get_series_round_map():
     """
     Returns {global_round: {'series_round': N, 'race_type': type}} mapping.
@@ -512,7 +512,7 @@ def get_series_round_map():
         series_counters[rt] = series_counters.get(rt, 0) + 1
         round_map[s['round']] = {'series_round': series_counters[rt], 'race_type': rt}
     return round_map
- 
+
 def get_series_round_label(round_num, round_map=None):
     """Get display label like 'SX R5' or 'MX R2' for a global round number."""
     if round_map is None:
@@ -522,241 +522,231 @@ def get_series_round_label(round_num, round_map=None):
         return f"R{round_num}"
     prefix = {'supercross': 'SX', 'motocross': 'MX', 'SMX': 'SMX'}.get(info['race_type'], '')
     return f"{prefix} R{info['series_round']}".strip()
- 
+
 def get_deadline_for_round(round_num):
     round_info = get_round_info(round_num)
     if not round_info:
         return None
     return calculate_deadline(round_info['race_date'], round_info['location'])
- 
+
 def get_round_location(round_num):
     round_info = get_round_info(round_num)
     if round_info:
         return round_info['location'].split(',')[0]
     return ""
- 
+
 def get_race_type_display(race_type):
     return RACE_TYPES.get(race_type, {'name': race_type, 'emoji': '🏍️', 'color': '#c9975b'})
- 
+
 # ============================================================================
 # AUTO-FETCH RESULTS FROM SUPERMOTOCROSS.COM
 # ============================================================================
- 
+
 def get_event_id(round_num):
     """
-    Get event ID from supermotocross.com based on round information.
-    The site organizes results by events, so we need to find the matching event.
+    Find the matching event ID on results.supermotocross.com for a round.
+    Matches primarily by race DATE (exact, reliable), with location words as
+    a tiebreaker. Skips non-championship events (WMX, Moto Combine, KTM Jr).
+    Returns event_id string or None.
     """
     round_info = get_round_info(round_num)
     if not round_info:
         return None
-    
-    location = round_info['location'].lower()
-    race_type = round_info['race_type']
+
     race_date = round_info['race_date']
-    
+    location_words = set(re.findall(r'[a-z]+', round_info['location'].lower()))
+
     try:
-        # Fetch the main results/schedule page
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        # Try to fetch the results page based on race type
-        if race_type == 'supercross':
-            url = 'https://www.supermotocross.com/supercross/results'
-        elif race_type == 'motocross':
-            url = 'https://www.supermotocross.com/motocross/results'
-        else:  # SMX
-            url = 'https://www.supermotocross.com/smx/results'
-        
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200:
-            # Try alternate URL structure
-            url = f'https://www.supermotocross.com/results'
-            response = requests.get(url, headers=headers, timeout=15)
-        
-        if response.status_code != 200:
-            return None
-            
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Look for event links that match location
-        # Common patterns: links containing city names, round numbers, or dates
-        location_parts = location.replace(',', ' ').split()
-        city = location_parts[0].lower() if location_parts else ''
-        
-        # Search for links containing the location name
-        for link in soup.find_all('a', href=True):
-            link_text = link.get_text().lower()
-            link_href = link['href'].lower()
-            
-            # Check if location matches
-            if city and (city in link_text or city in link_href):
-                # Extract event ID from href
-                # Common patterns: /event/123, /results/event-name, /round/1
-                href = link['href']
-                
-                # Try to extract numeric ID
-                id_match = re.search(r'/(\d+)', href)
-                if id_match:
-                    return id_match.group(1)
-                
-                # Return the full path as identifier
-                if '/event/' in href or '/round/' in href or '/results/' in href:
-                    return href
-        
-        # Fallback: construct event identifier from round info
-        return f"{race_type}-round-{round_num}"
-        
-    except Exception as e:
-        print(f"Error fetching event ID: {e}")
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        resp = requests.get('https://results.supermotocross.com/events/', headers=headers, timeout=20)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, 'html.parser')
+
+        candidates = []
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            m = re.search(r'p=view_event&(?:amp;)?id=(\d+)', href)
+            if not m:
+                continue
+            event_id = m.group(1)
+            event_name = a.get_text(strip=True)
+            if not event_name:
+                continue
+            # Skip support-class / non-championship events
+            if re.search(r'WMX|Moto Combine|KTM', event_name, re.IGNORECASE):
+                continue
+
+            # The date lives in the same table row as the link
+            row = a.find_parent('tr')
+            event_date = None
+            if row:
+                row_text = row.get_text(' ', strip=True)
+                dm = re.search(r'([A-Z][a-z]{2}) (\d{1,2}), (\d{4})', row_text)
+                if dm:
+                    try:
+                        event_date = datetime.strptime(
+                            f"{dm.group(1)} {dm.group(2)} {dm.group(3)}", '%b %d %Y').date()
+                    except ValueError:
+                        pass
+
+            candidates.append({'id': event_id, 'name': event_name, 'date': event_date})
+
+        # Pass 1: exact date match (allow 1 day tolerance for 2-day events)
+        date_matches = [c for c in candidates if c['date'] and abs((c['date'] - race_date).days) <= 1]
+        if len(date_matches) == 1:
+            return date_matches[0]['id']
+        if len(date_matches) > 1:
+            # Tiebreak on location word overlap
+            best, best_score = None, -1
+            for c in date_matches:
+                name_words = set(re.findall(r'[a-z]+', c['name'].lower()))
+                score = len(location_words & name_words)
+                if score > best_score:
+                    best, best_score = c, score
+            return best['id'] if best else None
+
+        # Pass 2: no date match - fall back to location words only
+        best, best_score = None, 0
+        for c in candidates:
+            name_words = set(re.findall(r'[a-z]+', c['name'].lower()))
+            score = len(location_words & name_words)
+            if score > best_score:
+                best, best_score = c, score
+        return best['id'] if best else None
+
+    except Exception:
         return None
- 
-def get_overall_url(event_id, rider_class):
+
+
+def get_result_urls(event_id, rider_class, class_250_type=None):
     """
-    Get the URL for overall/combined results for a specific class.
+    Get prioritized list of result page URLs for a class from an event page.
+    Motocross rounds publish "{cls} Overall Results" (view_multi_main_result);
+    Supercross rounds publish "{cls} Main Event" / "250 East|West Main Event" /
+    "East West Showdown" (view_race_result). Returns list of full URLs.
     """
-    if not event_id:
-        return None
-    
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        # Construct URLs based on common patterns
-        base_urls = [
-            f'https://www.supermotocross.com{event_id}' if event_id.startswith('/') else f'https://www.supermotocross.com/results/{event_id}',
-            f'https://www.supermotocross.com/event/{event_id}/results',
-            f'https://www.supermotocross.com/results/{event_id}',
-        ]
-        
-        class_suffix = '450' if rider_class == '450' else '250'
-        
-        for base_url in base_urls:
-            # Try various URL patterns for class-specific results
-            urls_to_try = [
-                f'{base_url}/{class_suffix}',
-                f'{base_url}?class={class_suffix}',
-                f'{base_url}/overall/{class_suffix}',
-                f'{base_url}#{class_suffix}',
-                base_url,  # Sometimes all classes on one page
-            ]
-            
-            for url in urls_to_try:
-                try:
-                    response = requests.get(url, headers=headers, timeout=10)
-                    if response.status_code == 200:
-                        # Verify this page has results content
-                        if 'position' in response.text.lower() or 'place' in response.text.lower() or 'finish' in response.text.lower():
-                            return url
-                except:
-                    continue
-        
-        return None
-        
-    except Exception as e:
-        print(f"Error getting overall URL: {e}")
-        return None
- 
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        url = f'https://results.supermotocross.com/results/?p=view_event&id={event_id}'
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, 'html.parser')
+
+        overall, mains = [], []
+        for a in soup.find_all('a', href=True):
+            href = a['href']
+            text = a.get_text(' ', strip=True)
+            if 'export=pdf' in href:
+                continue
+            if not re.search(r'p=view_(race_result|multi_main_result)', href):
+                continue
+            # Skip other classes / support races / non-finals
+            if re.search(r'WMX|KTM|Qualifying|Heat|LCQ|Practice|Lineup', text, re.IGNORECASE):
+                continue
+
+            full = href if href.startswith('http') else 'https://results.supermotocross.com' + (
+                href if href.startswith('/') else '/results/' + href)
+
+            if rider_class == '450':
+                if re.search(r'\b450\b.*Overall', text, re.IGNORECASE):
+                    overall.append(full)
+                elif re.search(r'\b450\b.*Main Event', text, re.IGNORECASE):
+                    mains.append(full)
+            else:  # 250
+                if re.search(r'\b250\b.*Overall', text, re.IGNORECASE):
+                    overall.append(full)
+                elif re.search(r'East\s*West Showdown', text, re.IGNORECASE):
+                    mains.append(full)
+                elif class_250_type == 'East' and re.search(r'250\s*East.*Main Event', text, re.IGNORECASE):
+                    mains.insert(0, full)
+                elif class_250_type == 'West' and re.search(r'250\s*West.*Main Event', text, re.IGNORECASE):
+                    mains.insert(0, full)
+                elif re.search(r'\b250\b(?!\s*(East|West)).*Main Event', text, re.IGNORECASE):
+                    mains.append(full)
+
+        return overall + mains  # Overall results take priority when present
+    except Exception:
+        return []
+
+
 def parse_results(url, rider_class, round_num):
     """
-    Parse results from a given URL and return a dictionary of {rider_name: position}.
-    Matches riders against the database to ensure we only get valid riders.
+    Parse a results page table (POS | # | BIKE | RIDER | ...) and match the
+    scraped rider names against the database riders for this class/round.
+    Returns {db_rider_name: position}.
     """
-    if not url:
+    # Build the rider list to match against
+    if rider_class == '250':
+        db_riders = get_available_250_riders(round_num)
+    else:
+        db_riders = get_riders_by_class('450')
+    if not db_riders:
         return {}
-    
+
+    def norm(s):
+        return re.sub(r'\s+', ' ', s).strip().upper()
+
+    riders_by_norm = {norm(r): r for r in db_riders}
+    # Secondary lookup: "C SEXTON" style (first initial + last name)
+    riders_by_initial_last = {}
+    for r in db_riders:
+        parts = r.split()
+        if len(parts) >= 2:
+            riders_by_initial_last[f"{parts[0][0].upper()} {parts[-1].upper()}"] = r
+
     try:
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-        }
-        
-        response = requests.get(url, headers=headers, timeout=15)
-        if response.status_code != 200:
-            return {}
-        
-        soup = BeautifulSoup(response.text, 'html.parser')
-        
-        # Get our registered riders for this class
-        if rider_class == '450':
-            our_riders = get_riders_by_class('450')
-        else:
-            our_riders = get_available_250_riders(round_num)
-        
-        # Create lookup dict for case-insensitive matching
-        rider_lookup = {r.lower(): r for r in our_riders}
-        
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+        resp = requests.get(url, headers=headers, timeout=20)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, 'html.parser')
+
         results = {}
-        
-        # Method 1: Look for tables with results
         for table in soup.find_all('table'):
-            rows = table.find_all('tr')
-            for row in rows:
-                cells = row.find_all(['td', 'th'])
-                if len(cells) >= 2:
-                    # Look for position (number) and name
-                    for i, cell in enumerate(cells):
-                        cell_text = cell.get_text().strip()
-                        
-                        # Check if this cell contains a position number
-                        if cell_text.isdigit():
-                            position = int(cell_text)
-                            
-                            # Look for rider name in adjacent cells
-                            for j, other_cell in enumerate(cells):
-                                if i != j:
-                                    name_text = other_cell.get_text().strip()
-                                    # Check if this matches one of our riders
-                                    name_lower = name_text.lower()
-                                    
-                                    # Try exact match
-                                    if name_lower in rider_lookup:
-                                        rider_name = rider_lookup[name_lower]
-                                        if rider_name not in results:
-                                            results[rider_name] = position
-                                        break
-                                    
-                                    # Try partial match (first and last name)
-                                    for rider_key, rider_name in rider_lookup.items():
-                                        if rider_key in name_lower or name_lower in rider_key:
-                                            if rider_name not in results:
-                                                results[rider_name] = position
-                                            break
-        
-        # Method 2: Look for structured result elements (common in modern sites)
-        result_containers = soup.find_all(['div', 'li'], class_=lambda x: x and ('result' in x.lower() or 'position' in x.lower() or 'standing' in x.lower()))
-        
-        for container in result_containers:
-            text = container.get_text()
-            
-            # Extract position and name using patterns
-            # Pattern: "1. Rider Name" or "1 Rider Name" or "Pos: 1 Name: Rider Name"
-            patterns = [
-                r'(\d+)\s*[\.\)\-]\s*([A-Za-z\s]+)',
-                r'pos[ition]*[:\s]+(\d+)[,\s]+([A-Za-z\s]+)',
-            ]
-            
-            for pattern in patterns:
-                matches = re.findall(pattern, text, re.IGNORECASE)
-                for match in matches:
-                    try:
-                        position = int(match[0])
-                        name_text = match[1].strip().lower()
-                        
-                        if name_text in rider_lookup:
-                            rider_name = rider_lookup[name_text]
-                            if rider_name not in results:
-                                results[rider_name] = position
-                    except:
-                        continue
-        
+            # Identify the results table by its header columns
+            header_cells = [norm(th.get_text()) for th in table.find_all('th')]
+            if not header_cells or 'RIDER' not in header_cells or 'POS' not in header_cells:
+                continue
+            pos_idx = header_cells.index('POS')
+            rider_idx = header_cells.index('RIDER')
+
+            for tr in table.find_all('tr'):
+                # Only direct cells; skip nested lap-time tables
+                if tr.find_parent('table') is not table:
+                    continue
+                cells = tr.find_all('td', recursive=False)
+                if len(cells) <= max(pos_idx, rider_idx):
+                    continue
+                pos_text = cells[pos_idx].get_text(strip=True)
+                if not pos_text.isdigit():
+                    continue
+                position = int(pos_text)
+                rider_raw = norm(cells[rider_idx].get_text(' ', strip=True))
+                rider_raw = re.sub(r'^[>\s]+', '', rider_raw)  # strip leading '>' marker
+
+                matched = riders_by_norm.get(rider_raw)
+                if not matched:
+                    # Try "F LASTNAME" form
+                    parts = rider_raw.split()
+                    if len(parts) >= 2:
+                        key = f"{parts[0][0]} {parts[-1]}"
+                        matched = riders_by_initial_last.get(key)
+                if not matched:
+                    # Last resort: unique last-name match
+                    last = rider_raw.split()[-1] if rider_raw.split() else ''
+                    last_matches = [r for r in db_riders if r.split()[-1].upper() == last]
+                    if len(last_matches) == 1:
+                        matched = last_matches[0]
+
+                if matched and matched not in results:
+                    results[matched] = position
+
+            if results:
+                break  # First valid results table is the one we want
+
         return results
-        
-    except Exception as e:
-        print(f"Error parsing results: {e}")
+    except Exception:
         return {}
- 
+
 def get_base_style():
     return '''
     <style>
@@ -1009,7 +999,7 @@ def get_base_style():
         }
     </style>
     '''
- 
+
 @app.route('/', methods=['GET', 'POST'])
 def login():
     if request.method == 'POST':
@@ -1052,7 +1042,7 @@ def login():
         </div>
     </div>
     ''')
- 
+
 @app.route('/register', methods=['GET', 'POST'])
 def register():
     if request.method == 'POST':
@@ -1103,7 +1093,7 @@ def register():
         </div>
     </div>
     ''')
- 
+
 @app.route('/forgot-password', methods=['GET', 'POST'])
 def forgot_password():
     if request.method == 'POST':
@@ -1166,7 +1156,7 @@ def forgot_password():
         </div>
     </div>
     ''')
- 
+
 @app.route('/change-password', methods=['GET', 'POST'])
 def change_password():
     if 'user_id' not in session:
@@ -1225,7 +1215,7 @@ def change_password():
         </div>
     </div>
     ''')
- 
+
 @app.route('/dashboard')
 def dashboard():
     if 'user_id' not in session:
@@ -1292,7 +1282,7 @@ def dashboard():
         </div>
     </div>
     ''', username=session['username'], current_round=current_round, location=location, race_type_info=race_type_info, series_label=series_label)
- 
+
 @app.route('/pick/<int:round_num>', methods=['GET', 'POST'])
 def pick(round_num):
     if 'user_id' not in session:
@@ -1655,7 +1645,7 @@ def pick(round_num):
          deadline_iso=deadline_iso, race_type_info=race_type_info, class_250_type=class_250_type,
          recent_picks=recent_picks, blocked_450=blocked_450, blocked_250=blocked_250,
          series_label=get_series_round_label(round_num, series_round_map))
- 
+
 @app.route('/leaderboard')
 def leaderboard():
     if 'user_id' not in session:
@@ -1896,7 +1886,7 @@ def leaderboard():
     ''', player_data=player_data, visible_rounds=visible_rounds, session=session, 
          get_race_type_display=get_race_type_display, 
          view=view, cache_empty=cache_empty, last_updated=last_updated)
- 
+
 @app.route('/rules')
 def rules():
     if 'user_id' not in session:
@@ -1965,7 +1955,7 @@ def rules():
         </div>
     </div>
     ''')
- 
+
 @app.route('/admin/schedule', methods=['GET', 'POST'])
 def admin_schedule():
     if session.get('username') != 'admin':
@@ -2201,7 +2191,7 @@ def admin_schedule():
         </div>
     </div>
     ''', schedule=schedule, get_race_type_display=get_race_type_display)
- 
+
 @app.route('/admin/riders', methods=['GET', 'POST'])
 def admin_riders():
     if session.get('username') != 'admin':
@@ -2316,7 +2306,7 @@ def admin_riders():
         </div>
     </div>
     ''', riders=riders)
- 
+
 @app.route('/admin/fetch-results/<int:round_num>')
 def fetch_results(round_num):
     if session.get('username') != 'admin':
@@ -2329,8 +2319,9 @@ def fetch_results(round_num):
     
     location = round_info['location']
     race_type = round_info['race_type']
+    class_250_type = round_info['class_250']
     
-    # Try to fetch event ID
+    # Find the event on results.supermotocross.com (matched by date + location)
     event_id = get_event_id(round_num)
     
     conn = get_db_connection()
@@ -2340,30 +2331,37 @@ def fetch_results(round_num):
     fetch_errors = []
     
     if event_id:
-        # Try to fetch results for each class
         for cls in ['450', '250']:
             try:
-                url = get_overall_url(event_id, cls)
-                if url:
+                urls = get_result_urls(event_id, cls, class_250_type if cls == '250' else None)
+                if not urls:
+                    fetch_errors.append(f'No {cls} results link found on the event page yet')
+                    continue
+                
+                results = {}
+                for url in urls:
                     results = parse_results(url, cls, round_num)
                     if results:
-                        if cls == '450':
-                            results_450 = results
-                        else:
-                            results_250 = results
-                        
-                        # Save results to database
-                        for rider, pos in results.items():
-                            c.execute('DELETE FROM results WHERE round_num = %s AND class = %s AND rider = %s',
-                                      (round_num, cls, rider))
-                            c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s)',
-                                      (round_num, cls, rider, pos))
+                        break  # First URL that yields results wins
+                
+                if results:
+                    if cls == '450':
+                        results_450 = results
+                    else:
+                        results_250 = results
+                    
+                    # Save results to database
+                    for rider, pos in results.items():
+                        c.execute('DELETE FROM results WHERE round_num = %s AND class = %s AND rider = %s',
+                                  (round_num, cls, rider))
+                        c.execute('INSERT INTO results (round_num, class, rider, position) VALUES (%s, %s, %s, %s)',
+                                  (round_num, cls, rider, pos))
                 else:
-                    fetch_errors.append(f'Could not find results URL for {cls} class')
+                    fetch_errors.append(f'Found {cls} results page but could not match any riders (check rider names in Manage Riders)')
             except Exception as e:
                 fetch_errors.append(f'Error fetching {cls} results: {str(e)}')
     else:
-        fetch_errors.append(f'Could not find event on supermotocross.com for {location}')
+        fetch_errors.append(f'Could not find a matching event on results.supermotocross.com for {location} ({round_info["race_date"].strftime("%b %d, %Y")})')
     
     conn.commit()
     conn.close()
@@ -2382,7 +2380,7 @@ def fetch_results(round_num):
             flash(f'Debug: {error}')
     
     return redirect(url_for('admin_results_selector'))
- 
+
 @app.route('/admin/assign-autopicks/<int:round_num>')
 def admin_assign_autopicks(round_num):
     if session.get('username') != 'admin':
@@ -2461,7 +2459,7 @@ def admin_assign_autopicks(round_num):
     
     flash(f'Auto-picks assigned to {assigned_count} user(s) who missed Round {round_num} deadline')
     return redirect(url_for('admin_results_selector'))
- 
+
 @app.route('/admin/recalculate-leaderboard')
 def admin_recalculate_leaderboard():
     """Admin-only route to recalculate the entire leaderboard cache"""
@@ -2475,7 +2473,7 @@ def admin_recalculate_leaderboard():
         flash(f'⚠️ Error recalculating leaderboard: {str(e)}')
     
     return redirect(url_for('admin_results_selector'))
- 
+
 @app.route('/admin/results-selector')
 def admin_results_selector():
     if session.get('username') != 'admin':
@@ -2623,7 +2621,7 @@ def admin_results_selector():
     ''', schedule=schedule, get_race_type_display=get_race_type_display, 
          get_deadline_for_round=get_deadline_for_round, now_utc=now_utc, last_updated=last_updated,
          results_counts=results_counts, picks_counts=picks_counts, total_users=total_users)
- 
+
 @app.route('/admin/<int:round_num>', methods=['GET', 'POST'])
 def admin_results(round_num):
     if session.get('username') != 'admin':
@@ -2966,7 +2964,7 @@ def admin_results(round_num):
     ''', round_num=round_num, round_info=round_info, riders_450=riders_450, riders_250=riders_250, 
          location=location, race_type_info=race_type_info, existing_results=existing_results,
          user_picks=user_picks, all_users=all_users, deadline_passed=deadline_passed)
- 
+
 @app.route('/admin/manage-users', methods=['GET', 'POST'])
 def admin_manage_users():
     if session.get('username') != 'admin':
@@ -3054,7 +3052,7 @@ def admin_manage_users():
         </div>
     </div>
     ''', users=users)
- 
+
 @app.route('/admin/export')
 def admin_export():
     if session.get('username') != 'admin':
@@ -3076,11 +3074,11 @@ def admin_export():
     conn.close()
     zip_buffer.seek(0)
     return send_file(zip_buffer, as_attachment=True, download_name='fantasy_league_export.zip', mimetype='application/zip')
- 
+
 @app.route('/logout')
 def logout():
     session.clear()
     return redirect(url_for('login'))
- 
+
 if __name__ == '__main__':
     app.run(debug=True)
